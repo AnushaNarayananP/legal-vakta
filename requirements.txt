@@ -1,0 +1,17 @@
+langchain
+langchain-community
+langchain-core
+langchain-huggingface
+langchain-text-splitters
+langgraph
+faiss-cpu
+streamlit
+pypdf
+sentence-transformers
+python-dotenv
+pandas
+pydantic
+jupyter
+openai
+gspread
+google-auth

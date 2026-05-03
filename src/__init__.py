@@ -1,0 +1,1 @@
+"""Legal Vakta RAG package."""

@@ -1,0 +1,25 @@
+# Secrets
+.env
+service_account.json
+smartreply-*.json
+
+# Python
+__pycache__/
+.pytest_cache/
+pytest-cache-files-*/
+*.pyc
+
+# Virtual env
+.venv/
+venv/
+
+# Large data
+data/pdfs/
+data/raw/
+pdfs/
+creating_mvp_dataset.py/
+dataset_descreibe.py/
+judgement_1_crl_language_none.csv/
+judgement_case_year_complete.csv/
+judgement_mvp_dataset.csv/
+judgments.csv/

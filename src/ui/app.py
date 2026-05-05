@@ -1,4 +1,4 @@
-"""Streamlit UI for Legal Vakta."""
+"""Streamlit UI for SpaceL AI."""
 
 import csv
 import sys
@@ -27,6 +27,8 @@ from src.ui.formatting import (
 PROCESSED_DATA_DIR = PROJECT_ROOT / "data" / "processed"
 QUERY_LOG_PATH = PROCESSED_DATA_DIR / "query_logs.csv"
 FEEDBACK_PATH = PROCESSED_DATA_DIR / "feedback.csv"
+PRODUCT_NAME = "SpaceL AI"
+PRODUCT_TAGLINE = "Where law meets intelligence - powered by real case data."
 SUGGESTED_QUERIES = [
     "Benefit of doubt in criminal appeals",
     "Bail conditions in serious offences",
@@ -49,8 +51,8 @@ EMPTY_USAGE_STATS = {
 
 
 st.set_page_config(
-    page_title="Legal Vakta",
-    page_icon="LV",
+    page_title=PRODUCT_NAME,
+    page_icon="SL",
     layout="wide",
 )
 
@@ -60,6 +62,62 @@ st.markdown(
     <style>
     .block-container {max-width: 980px; padding-top: 2rem; padding-bottom: 7rem;}
     .legal-subtitle {color: #4b5563; margin-bottom: 1.25rem;}
+    .landing-hero {
+        padding: 2rem 0 1.25rem 0;
+        border-bottom: 1px solid #e5e7eb;
+        margin-bottom: 1.5rem;
+    }
+    .landing-kicker {
+        color: #2563eb;
+        font-weight: 700;
+        letter-spacing: .02em;
+        text-transform: uppercase;
+        font-size: .8rem;
+        margin-bottom: .5rem;
+    }
+    .landing-title {
+        font-size: clamp(2.5rem, 6vw, 4.6rem);
+        line-height: 1;
+        margin: 0 0 .75rem 0;
+        font-weight: 800;
+        color: #111827;
+    }
+    .landing-tagline {
+        color: #1f2937;
+        font-size: 1.2rem;
+        margin-bottom: .75rem;
+    }
+    .landing-copy {
+        color: #4b5563;
+        font-size: 1rem;
+        max-width: 680px;
+    }
+    .landing-card {
+        border: 1px solid #e5e7eb;
+        background: #ffffff;
+        border-radius: 8px;
+        padding: 1rem;
+        min-height: 140px;
+    }
+    .landing-muted-card {
+        border: 1px dashed #cbd5e1;
+        background: #f8fafc;
+        border-radius: 8px;
+        padding: 1.25rem;
+        text-align: center;
+        color: #64748b;
+    }
+    .landing-metric {
+        border: 1px solid #dbeafe;
+        background: #eff6ff;
+        border-radius: 8px;
+        padding: .85rem;
+    }
+    .app-anchor {
+        border-top: 1px solid #e5e7eb;
+        margin-top: 2rem;
+        padding-top: 1.5rem;
+    }
     .insight-box {
         border-left: 4px solid #2563eb;
         background: #eff6ff;
@@ -108,6 +166,8 @@ def init_user_session():
         st.session_state.user_name = ""
     if "user_role" not in st.session_state:
         st.session_state.user_role = ROLE_OPTIONS[0]
+    if "email" not in st.session_state:
+        st.session_state.email = ""
 
 
 def get_user_profile():
@@ -116,6 +176,7 @@ def get_user_profile():
         "user_id": st.session_state.get("user_id", ""),
         "name": st.session_state.get("user_name", ""),
         "role": st.session_state.get("user_role", ""),
+        "email": st.session_state.get("email", "") or "N/A",
     }
 
 
@@ -154,16 +215,17 @@ def connect_google_sheets():
     return spreadsheet, query_sheet, feedback_sheet
 
 
-def log_query(query, user_id="", name="", role="", query_log_path=None):
+def log_query(query, user_id="", name="", role="", email="", query_log_path=None):
     """Persist a user query to Google Sheets, or CSV when a path is supplied."""
     if query_log_path is not None:
         append_csv_row(
             query_log_path,
-            fieldnames=["timestamp", "user_id", "name", "role", "query"],
+            fieldnames=["timestamp", "user_id", "name", "email", "role", "query"],
             row={
                 "timestamp": current_timestamp(),
                 "user_id": user_id,
                 "name": name,
+                "email": email or "N/A",
                 "role": role,
                 "query": query,
             },
@@ -177,6 +239,7 @@ def log_query(query, user_id="", name="", role="", query_log_path=None):
                 current_timestamp(),
                 user_id,
                 name,
+                email or "N/A",
                 role,
                 query,
             ]
@@ -187,7 +250,16 @@ def log_query(query, user_id="", name="", role="", query_log_path=None):
         return False
 
 
-def save_feedback(query, feedback, user_id="", name="", role="", feedback_path=None):
+def save_feedback(
+    query,
+    feedback,
+    user_id="",
+    name="",
+    role="",
+    email=None,
+    feedback_path=None,
+    **_ignored_profile_fields,
+):
     """Persist answer feedback to Google Sheets, or CSV when a path is supplied."""
     if feedback_path is not None:
         append_csv_row(
@@ -219,6 +291,27 @@ def save_feedback(query, feedback, user_id="", name="", role="", feedback_path=N
         return True
     except Exception as exc:
         st.error(f"Google Sheets feedback logging failed: {exc}")
+        return False
+
+
+def save_waitlist_lead(user_id, name, email, role):
+    """Persist one landing-page waitlist lead to Google Sheets."""
+    if not email or "@" not in email:
+        st.error("Please enter a valid email address.")
+        return False
+
+    try:
+        from src.utils.gsheets_logger import save_waitlist_lead as save_lead_to_sheets
+
+        save_lead_to_sheets(
+            user_id=user_id,
+            name=name,
+            email=email,
+            role=role,
+        )
+        return True
+    except Exception as exc:
+        st.error(f"Waitlist signup failed: {exc}")
         return False
 
 
@@ -313,7 +406,7 @@ def get_recent_unique_queries(history, limit=5, max_chars=60):
 
 @st.cache_resource(show_spinner=False)
 def initialize_graph():
-    """Load persisted FAISS index and compile the Legal Vakta graph."""
+    """Load persisted FAISS index and compile the SpaceL AI graph."""
     from src.agent.graph_builder import GraphBuilder
     from src.config import Settings, get_llm
     from src.retrieval.vectorstore import get_retriever, load_vectorstore
@@ -437,14 +530,26 @@ def render_feedback_controls(prompt, response_id):
     with useful_col:
         if st.button("Useful", key=f"useful_{response_id}", use_container_width=True):
             profile = get_user_profile()
-            if save_feedback(prompt, "useful", **profile):
+            if save_feedback(
+                prompt,
+                "useful",
+                user_id=profile["user_id"],
+                name=profile["name"],
+                role=profile["role"],
+            ):
                 st.session_state[submitted_key] = True
                 st.success("Feedback saved to Google Sheets: useful")
 
     with not_useful_col:
         if st.button("Not Useful", key=f"not_useful_{response_id}", use_container_width=True):
             profile = get_user_profile()
-            if save_feedback(prompt, "not_useful", **profile):
+            if save_feedback(
+                prompt,
+                "not_useful",
+                user_id=profile["user_id"],
+                name=profile["name"],
+                role=profile["role"],
+            ):
                 st.session_state[submitted_key] = True
                 st.warning("Feedback saved to Google Sheets: not useful")
 
@@ -486,12 +591,185 @@ def run_graph_with_mode(graph, prompt, mode):
         return fresh_graph.run(prompt, mode=mode)
 
 
+def render_landing_metric(label, value):
+    """Render a compact landing-page proof metric."""
+    st.markdown(
+        f"""
+        <div class="landing-metric">
+            <strong>{value}</strong><br>
+            <span>{label}</span>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def render_landing_social_proof():
+    """Show MVP usage proof, preferring live Sheets metrics when available."""
+    st.markdown("### MVP Proof")
+    try:
+        stats = load_usage_stats()
+        metric_columns = st.columns(4)
+        with metric_columns[0]:
+            render_landing_metric("Total queries", stats["total_queries"])
+        with metric_columns[1]:
+            render_landing_metric("Unique users", stats["unique_users"])
+        with metric_columns[2]:
+            render_landing_metric("Feedback count", stats["total_feedback"])
+        with metric_columns[3]:
+            render_landing_metric("Useful feedback", f"{stats['useful_feedback_percent']:.1f}%")
+    except Exception:
+        proof_columns = st.columns(4)
+        proof_items = [
+            "18+ queries tested",
+            "10+ users already using",
+            "Real case-based reasoning",
+            "Feedback-driven improvements",
+        ]
+        for column, item in zip(proof_columns, proof_items):
+            with column:
+                render_landing_metric("", item)
+
+
+def render_waitlist_form():
+    """Collect early-access leads from the landing page."""
+    st.markdown("### Get early access to SpaceL AI")
+    with st.form("waitlist_form", clear_on_submit=False):
+        name = st.text_input("Name (optional)", key="waitlist_name")
+        email = st.text_input("Email", key="waitlist_email")
+        role = st.selectbox("Role", ROLE_OPTIONS, key="waitlist_role")
+        submitted = st.form_submit_button("Join Waitlist", use_container_width=True)
+
+    if not submitted:
+        return
+
+    if save_waitlist_lead(
+        st.session_state.get("user_id", ""),
+        name.strip(),
+        email.strip(),
+        role,
+    ):
+        st.session_state.email = email.strip()
+        if name.strip():
+            st.session_state.user_name = name.strip()
+        st.session_state.user_role = role
+        st.success("You're on the SpaceL AI early access list.")
+
+
+def render_landing_page():
+    """Render the startup-style MVP landing page before the RAG chat."""
+    st.markdown(
+        f"""
+        <section class="landing-hero">
+            <div class="landing-kicker">AI legal research assistant</div>
+            <h1 class="landing-title">{PRODUCT_NAME}</h1>
+            <div class="landing-tagline">{PRODUCT_TAGLINE}</div>
+            <p class="landing-copy">
+                Ask legal questions and get case-based answers instantly.
+                No more hours of searching judgments or reading long PDFs.
+            </p>
+        </section>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    if st.button("Try SpaceL AI", type="primary", use_container_width=False):
+        st.session_state.show_app_section = True
+        st.success("SpaceL AI is ready below. Ask a legal research question to begin.")
+
+    st.markdown("### Demo")
+    st.video("https://youtu.be/a5OXVLpDyH4")
+    st.caption("See how SpaceL AI answers real legal questions in seconds.")
+
+    problem_col, solution_col = st.columns(2)
+    with problem_col:
+        st.markdown("### Problem")
+        st.markdown(
+            """
+            Legal research is slow, complex, and inefficient.
+
+            Students and lawyers spend hours:
+            - Searching through multiple judgments
+            - Reading long legal documents
+            - Trying to find relevant reasoning
+            - Missing key case insights
+            """
+        )
+
+    with solution_col:
+        st.markdown("### Solution")
+        st.markdown(
+            """
+            SpaceL AI simplifies legal research.
+
+            Just ask a question and get:
+            - Clear legal issue breakdown
+            - Relevant case context
+            - Source-backed reasoning
+            - Easy explanations for students
+            """
+        )
+
+    st.markdown("### Product Experience")
+    experience_col, output_col = st.columns([1, 1])
+    with experience_col:
+        st.markdown(
+            """
+            <div class="landing-card">
+                <strong>Example query</strong><br><br>
+                Benefit of doubt in criminal appeals
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+    with output_col:
+        st.markdown(
+            """
+            <div class="landing-card">
+                <strong>Expected output</strong><br><br>
+                Legal Issue<br>
+                Key Insight<br>
+                Relevant Case Context<br>
+                Source Documents
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+    st.markdown("### Core Features")
+    feature_columns = st.columns(4)
+    features = [
+        ("Legal Mode", "Professional legal reasoning"),
+        ("Student Mode", "Explain like a law student"),
+        ("Case-backed Answers", "Powered by real Supreme Court judgments"),
+        ("Instant Insights", "Get answers in seconds"),
+    ]
+    for column, (title, body) in zip(feature_columns, features):
+        with column:
+            st.markdown(
+                f"""
+                <div class="landing-card">
+                    <strong>{title}</strong><br><br>
+                    {body}
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+
+    render_landing_social_proof()
+    render_waitlist_form()
+    st.markdown('<div class="app-anchor" id="ask-spacel-ai"></div>', unsafe_allow_html=True)
+
+
 def render_sidebar():
     """Render recent searches, usage metrics, and reset control."""
     with st.sidebar:
         st.markdown("## User Details")
         st.text_input("Name (optional)", key="user_name")
         st.selectbox("Role", ROLE_OPTIONS, key="user_role")
+        email = st.text_input("Enter your email (optional)", key="email")
+        if not email:
+            st.info("Enter your email to get updates and improvements")
 
         st.markdown("---")
         st.markdown("## Answer Mode")
@@ -565,7 +843,9 @@ def main():
     """Render the chat interface."""
     init_user_session()
 
-    st.title("Legal Vakta - Criminal Case Assistant")
+    render_landing_page()
+
+    st.title("SpaceL AI - Criminal Case Assistant")
     st.markdown(
         '<p class="legal-subtitle">Knowledge Base: Supreme Court Criminal Judgments (2008-2023)</p>',
         unsafe_allow_html=True,
@@ -580,7 +860,7 @@ def main():
 
     try:
         graph = initialize_graph()
-        st.success("Vector index loaded. Legal Vakta is ready.")
+        st.success("Vector index loaded. SpaceL AI is ready.")
     except Exception as exc:
         st.error(str(exc))
         st.info("Run `python scripts/build_index.py` before starting the UI.")

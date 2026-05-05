@@ -18,14 +18,16 @@ def test_log_query_appends_query_with_timestamp():
         user_id="user-1",
         name="Asha",
         role="Law Student",
+        email="asha@example.com",
         query_log_path=query_log_path,
     )
 
     df = pd.read_csv(query_log_path)
-    assert df.columns.tolist() == ["timestamp", "user_id", "name", "role", "query"]
+    assert df.columns.tolist() == ["timestamp", "user_id", "name", "email", "role", "query"]
     assert df["user_id"].tolist() == ["user-1"]
     assert df["name"].tolist() == ["Asha"]
     assert df["role"].tolist() == ["Law Student"]
+    assert df["email"].tolist() == ["asha@example.com"]
     assert df["query"].tolist() == ["benefit of doubt"]
     assert isinstance(df.loc[0, "timestamp"], str)
 
@@ -67,6 +69,39 @@ def test_save_feedback_appends_feedback_with_timestamp():
     shutil.rmtree(test_root)
 
 
+def test_save_feedback_ignores_email_profile_field():
+    test_root = Path("test_artifacts") / "ui_tracking"
+    if test_root.exists():
+        shutil.rmtree(test_root)
+
+    feedback_path = test_root / "feedback.csv"
+
+    save_feedback(
+        "circumstantial evidence",
+        "not_useful",
+        user_id="user-3",
+        name="Meera",
+        email="meera@example.com",
+        role="Researcher",
+        feedback_path=feedback_path,
+    )
+
+    df = pd.read_csv(feedback_path)
+    assert df.columns.tolist() == [
+        "timestamp",
+        "user_id",
+        "name",
+        "role",
+        "query",
+        "feedback",
+    ]
+    assert df["user_id"].tolist() == ["user-3"]
+    assert df["role"].tolist() == ["Researcher"]
+    assert df["feedback"].tolist() == ["not_useful"]
+
+    shutil.rmtree(test_root)
+
+
 def test_load_usage_stats_handles_missing_files_and_counts_rows():
     test_root = Path("test_artifacts") / "ui_tracking"
     if test_root.exists():
@@ -83,8 +118,10 @@ def test_load_usage_stats_handles_missing_files_and_counts_rows():
         "not_useful_feedback_percent": 0.0,
     }
 
-    log_query("query one", "user-1", "Asha", "Law Student", query_log_path=query_log_path)
-    log_query("query two", "user-2", "", "Researcher", query_log_path=query_log_path)
+    log_query("query one", "user-1", "Asha", "Law Student", "asha@example.com", query_log_path=query_log_path)
+    log_query("query two", "user-2", "", "Researcher", "", query_log_path=query_log_path)
+    query_df = pd.read_csv(query_log_path, keep_default_na=False)
+    assert query_df["email"].tolist() == ["asha@example.com", "N/A"]
     save_feedback("query one", "useful", "user-1", "Asha", "Law Student", feedback_path=feedback_path)
     save_feedback("query two", "not_useful", "user-2", "", "Researcher", feedback_path=feedback_path)
 

@@ -1,23 +1,17 @@
 """Google Sheets logging for Legal Vakta MVP usage tracking."""
 
-import os
 from datetime import datetime
-from pathlib import Path
 from typing import Dict, List, Optional
 
 import pandas as pd
-from dotenv import load_dotenv
-
-load_dotenv()
-
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_SERVICE_ACCOUNT_FILE = PROJECT_ROOT / "service_account.json"
 
 SHEET_NAME = "Legal_Vakta_Logs"
 QUERIES_WORKSHEET = "queries"
 FEEDBACK_WORKSHEET = "feedback"
-QUERY_HEADERS = ["timestamp", "user_id", "name", "role", "query"]
+WAITLIST_WORKSHEET = "waitlist"
+QUERY_HEADERS = ["timestamp", "user_id", "name", "email", "role", "query"]
 FEEDBACK_HEADERS = ["timestamp", "user_id", "name", "role", "query", "feedback"]
+WAITLIST_HEADERS = ["timestamp", "user_id", "name", "email", "role", "source"]
 MISSING_WORKSHEETS_MESSAGE = "Please create worksheets named queries and feedback manually."
 SCOPES = [
     "https://www.googleapis.com/auth/spreadsheets",
@@ -36,74 +30,56 @@ def _load_streamlit_service_account_info() -> Optional[Dict]:
         import streamlit as st
 
         if "gcp_service_account" not in st.secrets:
-            return None
+            raise RuntimeError(
+                "Missing Streamlit secret: gcp_service_account. Add your Google "
+                "service account fields under [gcp_service_account] in Streamlit secrets."
+            )
         service_account_info = dict(st.secrets["gcp_service_account"])
         if not service_account_info:
             raise ValueError("st.secrets['gcp_service_account'] is empty.")
         return service_account_info
-    except Exception:
-        return None
-
-
-def _get_credential_file_path() -> Path:
-    """Return configured service account file path, defaulting to project root."""
-    credential_path = (
-        os.getenv("GOOGLE_SERVICE_ACCOUNT_FILE")
-        or os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
-    )
-    return Path(credential_path) if credential_path else DEFAULT_SERVICE_ACCOUNT_FILE
+    except Exception as exc:
+        raise RuntimeError(f"Google service account secrets are not configured: {exc}") from exc
 
 
 def get_service_account_email() -> str:
     """Return service account email for sheet-sharing diagnostics."""
-    path = _get_credential_file_path()
-    if path.exists():
-        from google.oauth2.service_account import Credentials
-
-        credentials = Credentials.from_service_account_file(path, scopes=SCOPES)
-        return credentials.service_account_email
-
-    streamlit_info = _load_streamlit_service_account_info()
-    if streamlit_info:
-        return streamlit_info.get("client_email", "")
-
-    return ""
+    return _load_streamlit_service_account_info().get("client_email", "")
 
 
 def get_gspread_client():
-    """Create an authenticated gspread client."""
+    """Create an authenticated gspread client from Streamlit Cloud secrets."""
     import gspread
     from google.oauth2.service_account import Credentials
 
-    path = _get_credential_file_path()
-
-    if path.exists():
-        credentials = Credentials.from_service_account_file(path, scopes=SCOPES)
-    elif streamlit_info := _load_streamlit_service_account_info():
-        credentials = Credentials.from_service_account_info(streamlit_info, scopes=SCOPES)
-    else:
-        raise FileNotFoundError(
-            "Google service account credentials not found. Configure Streamlit "
-            "secrets [gcp_service_account] or place service_account.json in the "
-            "project root. You can also set GOOGLE_SERVICE_ACCOUNT_FILE to a JSON key file."
-        )
+    service_account_info = _load_streamlit_service_account_info()
+    credentials = Credentials.from_service_account_info(
+        service_account_info,
+        scopes=SCOPES,
+    )
 
     return gspread.authorize(credentials)
 
 
 def get_spreadsheet(client=None):
-    """Open the existing spreadsheet by ID or name without creating Drive files."""
+    """Open the existing spreadsheet by Streamlit secret ID without creating Drive files."""
+    import streamlit as st
+
     gspread_client = client or get_gspread_client()
-    sheet_id = os.getenv("GOOGLE_SHEET_ID", "").strip().strip('"')
+    sheet_id = str(st.secrets.get("GOOGLE_SHEET_ID", "")).strip()
+    if not sheet_id:
+        raise RuntimeError(
+            "Missing Streamlit secret: GOOGLE_SHEET_ID. Add your Google Sheet ID "
+            "to Streamlit secrets."
+        )
+
     try:
-        if sheet_id:
-            return gspread_client.open_by_key(sheet_id)
-        return gspread_client.open(SHEET_NAME)
+        return gspread_client.open_by_key(sheet_id)
     except Exception as exc:
         raise RuntimeError(
             f"Could not open existing Google Sheet '{SHEET_NAME}'. "
-            "Do not create a new sheet from the app. Confirm the sheet exists, "
-            "GOOGLE_SHEET_ID is correct, and it is shared with the service account. "
+            "Do not create a new sheet from the app. Confirm GOOGLE_SHEET_ID is "
+            "correct and the sheet is shared with the service account. "
             f"Original error: {exc}"
         ) from exc
 
@@ -155,6 +131,42 @@ def get_or_create_worksheet(spreadsheet, title: str, headers: List[str]):
     return worksheet
 
 
+def get_or_create_waitlist_worksheet(spreadsheet):
+    """Return the waitlist worksheet, creating it when Google Sheets allows it."""
+    try:
+        worksheet = spreadsheet.worksheet(WAITLIST_WORKSHEET)
+    except Exception as exc:
+        try:
+            worksheet = spreadsheet.add_worksheet(
+                title=WAITLIST_WORKSHEET,
+                rows=1,
+                cols=len(WAITLIST_HEADERS),
+            )
+            worksheet.update(range_name="A1:F1", values=[WAITLIST_HEADERS])
+            return worksheet
+        except Exception as create_exc:
+            raise RuntimeError(
+                "Worksheet 'waitlist' is missing. Please create it manually with "
+                "headers: timestamp,user_id,name,email,role,source"
+            ) from create_exc
+
+    existing_values = worksheet.get_all_values()
+    if not existing_values:
+        try:
+            worksheet.update(range_name="A1:F1", values=[WAITLIST_HEADERS])
+        except Exception as exc:
+            raise RuntimeError(
+                "Worksheet 'waitlist' is empty. Add this header row manually: "
+                "timestamp,user_id,name,email,role,source"
+            ) from exc
+    elif existing_values[0][: len(WAITLIST_HEADERS)] != WAITLIST_HEADERS:
+        raise RuntimeError(
+            "Worksheet 'waitlist' has incorrect headers. Expected: "
+            "timestamp,user_id,name,email,role,source"
+        )
+    return worksheet
+
+
 def append_record(worksheet_name: str, headers: List[str], row: Dict, spreadsheet=None):
     """Append one record to a worksheet."""
     active_spreadsheet = spreadsheet or get_spreadsheet()
@@ -169,7 +181,7 @@ def get_records(worksheet_name: str, headers: List[str], spreadsheet=None) -> Li
     return worksheet.get_all_records()
 
 
-def log_query(user_id: str, name: str, role: str, query: str, spreadsheet=None):
+def log_query(user_id: str, name: str, email: str, role: str, query: str, spreadsheet=None):
     """Log one user query to the queries worksheet."""
     append_record(
         QUERIES_WORKSHEET,
@@ -178,6 +190,7 @@ def log_query(user_id: str, name: str, role: str, query: str, spreadsheet=None):
             "timestamp": current_timestamp(),
             "user_id": user_id,
             "name": name,
+            "email": email or "N/A",
             "role": role,
             "query": query,
         },
@@ -206,6 +219,31 @@ def save_feedback(
             "feedback": feedback,
         },
         spreadsheet=spreadsheet,
+    )
+
+
+def save_waitlist_lead(
+    user_id: str,
+    name: str,
+    email: str,
+    role: str,
+    spreadsheet=None,
+):
+    """Save one landing-page waitlist lead."""
+    if not email or "@" not in email:
+        raise ValueError("A valid email address is required.")
+
+    active_spreadsheet = spreadsheet or get_spreadsheet()
+    worksheet = get_or_create_waitlist_worksheet(active_spreadsheet)
+    worksheet.append_row(
+        [
+            current_timestamp(),
+            user_id,
+            name,
+            email,
+            role,
+            "landing_page",
+        ]
     )
 
 

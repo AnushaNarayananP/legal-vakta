@@ -1,1 +1,1 @@
-"""LLM providers for Legal Vakta."""
+"""LLM providers for SpaceL AI."""

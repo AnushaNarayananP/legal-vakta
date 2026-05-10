@@ -1,4 +1,4 @@
-"""Recursive PDF loading for Legal Vakta."""
+"""Recursive PDF loading for SpaceL AI."""
 
 from pathlib import Path
 from typing import Iterable, List, Union

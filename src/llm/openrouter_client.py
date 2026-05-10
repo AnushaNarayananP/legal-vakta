@@ -1,4 +1,4 @@
-"""OpenRouter chat client for Legal Vakta."""
+"""OpenRouter chat client for SpaceL AI."""
 
 import os
 from dataclasses import dataclass

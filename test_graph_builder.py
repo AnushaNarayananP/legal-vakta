@@ -57,15 +57,16 @@ def test_graph_builder_prompt_requires_structured_legal_sections():
     prompt_text = "\n".join(message.content for message in llm.messages)
 
     assert result["answer"] == "structured answer"
+    assert "Key Insight" in prompt_text
     assert "Legal Issue" in prompt_text
-    assert "Relevant Case Context" in prompt_text
     assert "Legal Reasoning" in prompt_text
-    assert "Possible Legal Direction" in prompt_text
+    assert "Final Takeaway" in prompt_text
     assert "Source Evidence" in prompt_text
-    assert "You are Legal Vakta, an AI legal research assistant." in prompt_text
+    assert "You are SpaceL AI, an AI legal research product" in prompt_text
     assert "Use ONLY the retrieved context." in prompt_text
-    assert "Do NOT invent case names, sections, or judgments." in prompt_text
-    assert "Quote exact lines from documents (with source numbers)" in prompt_text
+    assert "Do not invent case names." in prompt_text
+    assert "Do not invent citations." in prompt_text
+    assert "The retrieved judgments provide limited direct discussion" in prompt_text
     assert f'"{FALLBACK_RESPONSE}"' in prompt_text
 
 
@@ -82,9 +83,9 @@ def test_graph_builder_student_mode_uses_student_prompt():
 
     assert result["answer"] == "structured answer"
     assert "designed to explain court judgments to law students" in prompt_text
-    assert "Simplified Explanation (For Law Students)" in prompt_text
-    assert "Key Legal Principle" in prompt_text
-    assert "From Cases" in prompt_text
+    assert "Simple Explanation" in prompt_text
+    assert "Legal Concept" in prompt_text
+    assert "Simplified Source Evidence" in prompt_text
     assert STUDENT_FALLBACK_RESPONSE in prompt_text
 
 

@@ -1,1 +1,1 @@
-"""Legal Vakta RAG package."""
+"""SpaceL AI RAG package."""

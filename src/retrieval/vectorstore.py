@@ -1,5 +1,6 @@
 """FAISS vector store creation and loading."""
 
+from functools import lru_cache
 from pathlib import Path
 from typing import Iterable, Union
 
@@ -10,6 +11,7 @@ from langchain_huggingface import HuggingFaceEmbeddings
 from src.config import Settings
 
 
+@lru_cache(maxsize=2)
 def create_embeddings(model_name: str = Settings.embedding_model):
     """Create local sentence-transformer embeddings."""
     return HuggingFaceEmbeddings(model_name=model_name)

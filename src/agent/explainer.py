@@ -1,4 +1,4 @@
-"""Law-student explanation helper for Legal Vakta answers."""
+"""Law-student explanation helper for SpaceL AI answers."""
 
 from typing import List
 
@@ -8,7 +8,7 @@ from langchain_core.messages import HumanMessage, SystemMessage
 EXPLAIN_FALLBACK_RESPONSE = "Cannot simplify due to insufficient legal context."
 
 EXPLAIN_PROMPT = f"""
-You are Legal Vakta, an AI legal research assistant.
+You are SpaceL AI, an AI legal research product.
 
 You will be given:
 1. Retrieved legal context

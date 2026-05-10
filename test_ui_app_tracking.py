@@ -3,7 +3,14 @@ import shutil
 
 import pandas as pd
 
-from src.ui.app import get_recent_unique_queries, load_usage_stats, log_query, save_feedback
+from src.ui.app import (
+    build_impact_stats,
+    get_recent_unique_queries,
+    get_user_facing_error_message,
+    load_usage_stats,
+    log_query,
+    save_feedback,
+)
 
 
 def test_log_query_appends_query_with_timestamp():
@@ -157,3 +164,42 @@ def test_get_recent_unique_queries_keeps_last_five_unique_and_truncates():
     assert result[3].endswith("...")
     assert len(result[3]) == 60
     assert result[4] == "Circumstantial evidence cases"
+
+
+def test_build_impact_stats_uses_live_counts_when_available():
+    stats = {
+        "total_queries": 125,
+        "unique_users": 14,
+        "total_feedback": 10,
+        "useful_feedback_percent": 80.0,
+        "not_useful_feedback_percent": 20.0,
+    }
+
+    impact = build_impact_stats(stats)
+
+    assert impact[0] == ("Legal Queries Processed", "125+")
+    assert impact[1] == ("Helpful Responses", "80%")
+    assert impact[2] == ("Active Testers", "14")
+    assert impact[3] == ("Grounding", "Real judgments")
+
+
+def test_build_impact_stats_uses_demo_safe_fallbacks_for_empty_counts():
+    stats = {
+        "total_queries": 0,
+        "unique_users": 0,
+        "total_feedback": 0,
+        "useful_feedback_percent": 0.0,
+        "not_useful_feedback_percent": 0.0,
+    }
+
+    impact = build_impact_stats(stats)
+
+    assert impact[0][1].endswith("+")
+    assert impact[1][1].endswith("%")
+    assert impact[2][1] == "Active law student testing"
+
+
+def test_get_user_facing_error_message_hides_provider_details():
+    assert "high demand" in get_user_facing_error_message(Exception("429 rate limit")).lower()
+    assert "connection issue" in get_user_facing_error_message(Exception("Connection timeout")).lower()
+    assert "legal precedent" in get_user_facing_error_message(Exception("Vectorstore not found")).lower()

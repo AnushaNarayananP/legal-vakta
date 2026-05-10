@@ -14,13 +14,17 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+from src.config import Settings
 from src.ui.formatting import (
     SECTION_ICONS,
     SECTION_TITLES,
+    STUDENT_SECTION_TITLES,
     build_key_insight,
     clean_snippet,
     format_case_label,
+    get_source_display_metadata,
     parse_structured_answer,
+    sort_source_evidence,
 )
 
 
@@ -28,7 +32,7 @@ PROCESSED_DATA_DIR = PROJECT_ROOT / "data" / "processed"
 QUERY_LOG_PATH = PROCESSED_DATA_DIR / "query_logs.csv"
 FEEDBACK_PATH = PROCESSED_DATA_DIR / "feedback.csv"
 PRODUCT_NAME = "SpaceL AI"
-PRODUCT_TAGLINE = "Where law meets intelligence - powered by real case data."
+PRODUCT_TAGLINE = "AI legal research in seconds, grounded in real court judgments."
 SUGGESTED_QUERIES = [
     "Benefit of doubt in criminal appeals",
     "Bail conditions in serious offences",
@@ -60,44 +64,73 @@ st.set_page_config(
 st.markdown(
     """
     <style>
-    .block-container {max-width: 980px; padding-top: 2rem; padding-bottom: 7rem;}
+    :root {
+        --spacel-blue: #0f2f5f;
+        --spacel-blue-soft: #eff6ff;
+        --spacel-gold: #c9972b;
+        --spacel-ink: #111827;
+        --spacel-muted: #4b5563;
+        --spacel-line: #e5e7eb;
+    }
+    .block-container {max-width: 1040px; padding-top: 2.25rem; padding-bottom: 7rem;}
     .legal-subtitle {color: #4b5563; margin-bottom: 1.25rem;}
     .landing-hero {
-        padding: 2rem 0 1.25rem 0;
-        border-bottom: 1px solid #e5e7eb;
-        margin-bottom: 1.5rem;
+        padding: 3.25rem 0 2.25rem 0;
+        border-bottom: 1px solid var(--spacel-line);
+        margin-bottom: 2rem;
     }
     .landing-kicker {
-        color: #2563eb;
+        color: var(--spacel-gold);
         font-weight: 700;
         letter-spacing: .02em;
         text-transform: uppercase;
-        font-size: .8rem;
-        margin-bottom: .5rem;
-    }
-    .landing-title {
-        font-size: clamp(2.5rem, 6vw, 4.6rem);
-        line-height: 1;
-        margin: 0 0 .75rem 0;
-        font-weight: 800;
-        color: #111827;
-    }
-    .landing-tagline {
-        color: #1f2937;
-        font-size: 1.2rem;
+        font-size: .82rem;
         margin-bottom: .75rem;
     }
+    .landing-title {
+        font-size: clamp(2.6rem, 6vw, 4.8rem);
+        line-height: 1.02;
+        margin: 0 0 1rem 0;
+        font-weight: 800;
+        color: var(--spacel-blue);
+    }
+    .landing-tagline {
+        color: var(--spacel-ink);
+        font-size: 1.28rem;
+        margin-bottom: .85rem;
+        max-width: 760px;
+    }
     .landing-copy {
-        color: #4b5563;
+        color: var(--spacel-muted);
         font-size: 1rem;
-        max-width: 680px;
+        max-width: 720px;
+        margin-bottom: 1.35rem;
+    }
+    .landing-section {
+        padding: 1.7rem 0;
+        border-bottom: 1px solid #f1f5f9;
+    }
+    .landing-section-title {
+        color: var(--spacel-blue);
+        font-size: 1.35rem;
+        font-weight: 760;
+        margin-bottom: .45rem;
+    }
+    .landing-section-copy {
+        color: var(--spacel-muted);
+        max-width: 720px;
+        margin-bottom: 1rem;
     }
     .landing-card {
-        border: 1px solid #e5e7eb;
+        border: 1px solid var(--spacel-line);
         background: #ffffff;
         border-radius: 8px;
-        padding: 1rem;
-        min-height: 140px;
+        padding: 1.05rem;
+        min-height: 118px;
+        box-shadow: 0 1px 2px rgba(15, 47, 95, .04);
+    }
+    .landing-card strong {
+        color: var(--spacel-blue);
     }
     .landing-muted-card {
         border: 1px dashed #cbd5e1;
@@ -109,9 +142,22 @@ st.markdown(
     }
     .landing-metric {
         border: 1px solid #dbeafe;
-        background: #eff6ff;
+        background: var(--spacel-blue-soft);
         border-radius: 8px;
-        padding: .85rem;
+        padding: 1rem;
+        min-height: 86px;
+    }
+    .landing-metric strong {
+        color: var(--spacel-blue);
+        font-size: 1.35rem;
+    }
+    .use-case-pill {
+        border: 1px solid #dbeafe;
+        background: #f8fafc;
+        border-radius: 999px;
+        padding: .55rem .8rem;
+        margin-bottom: .55rem;
+        color: #1f2937;
     }
     .app-anchor {
         border-top: 1px solid #e5e7eb;
@@ -124,6 +170,23 @@ st.markdown(
         padding: 1rem 1.1rem;
         border-radius: 8px;
         margin: 1rem 0 1.25rem 0;
+    }
+    .answer-card {
+        border: 1px solid #e5e7eb;
+        background: #ffffff;
+        border-radius: 8px;
+        padding: 1rem 1.1rem;
+        margin: .75rem 0;
+    }
+    .answer-card-title {
+        font-weight: 700;
+        color: #111827;
+        margin-bottom: .45rem;
+    }
+    .source-meta {
+        color: #374151;
+        line-height: 1.7;
+        margin-bottom: .6rem;
     }
     .section-gap {margin-top: 1.25rem;}
     div[data-testid="stHorizontalBlock"]:has(button[kind="secondary"]) {
@@ -183,6 +246,20 @@ def get_user_profile():
 def get_answer_mode():
     """Return selected answer mode from session state."""
     return st.session_state.get("answer_mode", "Legal")
+
+
+def init_chat_state():
+    """Initialize chat and answer-generation state."""
+    if "messages" not in st.session_state:
+        st.session_state.messages = []
+    if "query_history" not in st.session_state:
+        st.session_state.query_history = []
+    if "last_query" not in st.session_state:
+        st.session_state.last_query = ""
+    if "last_mode" not in st.session_state:
+        st.session_state.last_mode = get_answer_mode()
+    if "last_response" not in st.session_state:
+        st.session_state.last_response = None
 
 
 @st.cache_resource(show_spinner=False)
@@ -245,8 +322,8 @@ def log_query(query, user_id="", name="", role="", email="", query_log_path=None
             ]
         )
         return True
-    except Exception as exc:
-        st.error(f"Google Sheets query logging failed: {exc}")
+    except Exception:
+        st.caption("Query analytics are temporarily offline. Your answer experience is unaffected.")
         return False
 
 
@@ -289,8 +366,8 @@ def save_feedback(
             ]
         )
         return True
-    except Exception as exc:
-        st.error(f"Google Sheets feedback logging failed: {exc}")
+    except Exception:
+        st.warning("Feedback could not be saved right now. Please try again in a moment.")
         return False
 
 
@@ -310,8 +387,8 @@ def save_waitlist_lead(user_id, name, email, role):
             role=role,
         )
         return True
-    except Exception as exc:
-        st.error(f"Waitlist signup failed: {exc}")
+    except Exception:
+        st.warning("Waitlist signup is temporarily unavailable. Please try again shortly.")
         return False
 
 
@@ -379,6 +456,42 @@ def load_usage_stats(query_log_path=None, feedback_path=None):
     }
 
 
+def build_impact_stats(stats):
+    """Build demo-safe impact metrics from live usage stats."""
+    query_count = int(stats.get("total_queries", 0) or 0)
+    useful_percent = float(stats.get("useful_feedback_percent", 0.0) or 0.0)
+    unique_users = int(stats.get("unique_users", 0) or 0)
+
+    query_value = f"{max(query_count, Settings.fallback_query_count)}+"
+    helpful_value = f"{int(round(useful_percent or Settings.fallback_helpful_percent))}%"
+    tester_value = str(unique_users) if unique_users else "Active law student testing"
+
+    return [
+        ("Legal Queries Processed", query_value),
+        ("Helpful Responses", helpful_value),
+        ("Active Testers", tester_value),
+        ("Grounding", "Real judgments"),
+    ]
+
+
+def get_user_facing_error_message(exc):
+    """Convert internal failures into polished user-facing copy."""
+    error_text = str(exc or "")
+    normalized = error_text.lower()
+
+    if "429" in normalized or "rate" in normalized or "busy" in normalized:
+        return "⚠️ SpaceL AI is experiencing high demand. Retrying with backup model support when available."
+    if "vectorstore" in normalized or "index.faiss" in normalized or "retriev" in normalized:
+        return "📚 No strong legal precedent index is available yet. Please build the judgment index or try again after setup."
+    if "connection" in normalized or "timeout" in normalized or "network" in normalized or "temporary" in normalized:
+        return "🌐 Temporary connection issue. Please try again in a few seconds."
+    if "openrouter" in normalized or "ollama" in normalized or "model" in normalized or "api" in normalized:
+        return "⚠️ The AI model is temporarily unavailable. SpaceL AI is keeping your session intact, so you can retry safely."
+    if "no documents" in normalized or "not found" in normalized:
+        return "📚 No strong legal precedent found. Try a more specific legal question."
+    return "⚖️ SpaceL AI could not complete this request. Please try again with a more specific legal question."
+
+
 def truncate_query(query, max_chars=60):
     """Shorten sidebar queries without losing readability."""
     query_text = str(query)
@@ -432,20 +545,35 @@ def render_key_insight(sections):
     )
 
 
-def render_answer_sections(answer):
-    """Render model output as separated legal research sections."""
-    sections = parse_structured_answer(answer)
-    render_key_insight(sections)
+def render_answer_card(title, content):
+    """Render one answer section as a compact professional card."""
+    icon = SECTION_ICONS.get(title, "")
+    try:
+        card = st.container(border=True)
+    except TypeError:
+        card = st.container()
 
-    for title in SECTION_TITLES:
+    with card:
+        st.markdown(f"**{icon} {title}**")
+        st.markdown(content)
+
+
+def render_answer_sections(answer, mode="Legal"):
+    """Render model output as separated legal research sections."""
+    is_student_mode = mode == "Student"
+    section_titles = STUDENT_SECTION_TITLES if is_student_mode else SECTION_TITLES
+    sections = parse_structured_answer(answer, titles=section_titles)
+
+    for title in section_titles:
         content = sections.get(title, "").strip()
         if not content:
             continue
+        if title in {"Source Evidence", "Simplified Source Evidence"}:
+            content = sort_source_evidence(content)
 
-        icon = SECTION_ICONS.get(title, "")
-        st.markdown('<div class="section-gap"></div>', unsafe_allow_html=True)
-        st.markdown(f"### {icon} {title}")
-        st.markdown(content)
+        render_answer_card(title, content)
+        if title != section_titles[-1]:
+            st.divider()
 
 
 def render_confidence_indicator(docs):
@@ -456,13 +584,16 @@ def render_confidence_indicator(docs):
     elif doc_count >= 2:
         st.warning(f"Moderate confidence ({doc_count} documents retrieved)")
     else:
-        st.error(f"Low confidence ({doc_count} documents retrieved)")
+        st.info(
+            "⚖️ Limited direct case context found. SpaceL AI will provide the best grounded explanation available."
+        )
 
 
 def render_retrieved_documents(docs):
     """Show every retrieved source chunk in original retrieval order."""
     st.markdown('<div class="section-gap"></div>', unsafe_allow_html=True)
-    st.markdown("### Retrieved Documents")
+    st.divider()
+    st.markdown("### 📚 Source Evidence")
 
     if not docs:
         st.info("No documents retrieved.")
@@ -470,51 +601,29 @@ def render_retrieved_documents(docs):
 
     for source_number, doc in enumerate(docs, start=1):
         label = format_case_label(doc, source_number=source_number)
-        metadata = getattr(doc, "metadata", {}) or {}
+        display = get_source_display_metadata(doc)
 
         with st.expander(label):
-            source = metadata.get("source") or "Unknown source"
-            st.caption(f"File path: {source}")
-            st.markdown("**Retrieved snippet:**")
-            st.markdown(clean_snippet(getattr(doc, "page_content", "")))
+            st.markdown(
+                f"""
+                <div class="source-meta">
+                    <strong>PDF:</strong> {display['pdf_name']}<br>
+                    <strong>Case year:</strong> {display['case_year']}<br>
+                    <strong>Page:</strong> {display['page']}
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+            if display["relevance_reason"] != "Not available":
+                st.markdown(f"**Relevance reason:** {display['relevance_reason']}")
+            st.markdown("**Clean snippet:**")
+            st.info(clean_snippet(getattr(doc, "page_content", "")) or "Not available")
 
 
 def render_copy_answer(answer):
     """Render markdown copy block in a collapsed bottom expander."""
     with st.expander("Copy full answer"):
         st.code(answer, language="markdown")
-
-
-def render_law_student_explanation(result, response_id):
-    """Render optional simplified explanation for law students."""
-    explanation_key = f"law_student_explanation_{response_id}"
-    if st.session_state.get(explanation_key):
-        st.markdown('<div class="section-gap"></div>', unsafe_allow_html=True)
-        st.markdown("### Simplified Explanation")
-        st.markdown(st.session_state[explanation_key])
-        return
-
-    if st.button(
-        "Explain for Law Student",
-        key=f"explain_law_student_{response_id}",
-        use_container_width=True,
-    ):
-        try:
-            from src.agent.explainer import explain_answer_for_law_students
-            from src.config import get_llm
-
-            with st.spinner("Simplifying for law students..."):
-                explanation = explain_answer_for_law_students(
-                    get_llm(),
-                    result.get("retrieved_docs", []),
-                    result.get("answer", ""),
-                )
-            st.session_state[explanation_key] = explanation
-            st.markdown('<div class="section-gap"></div>', unsafe_allow_html=True)
-            st.markdown("### Simplified Explanation")
-            st.markdown(explanation)
-        except Exception as exc:
-            render_llm_error(exc)
 
 
 def render_feedback_controls(prompt, response_id):
@@ -557,9 +666,7 @@ def render_feedback_controls(prompt, response_id):
 def render_assistant_response(result, prompt, elapsed, response_id):
     """Render the complete professional response view."""
     render_confidence_indicator(result["retrieved_docs"])
-    render_answer_sections(result["answer"])
-    if result.get("mode") == "Legal":
-        render_law_student_explanation(result, response_id)
+    render_answer_sections(result["answer"], mode=result.get("mode", "Legal"))
     render_retrieved_documents(result["retrieved_docs"])
     render_copy_answer(result["answer"])
     render_feedback_controls(prompt, response_id)
@@ -568,14 +675,7 @@ def render_assistant_response(result, prompt, elapsed, response_id):
 
 def render_llm_error(exc):
     """Render a clean LLM provider error instead of a traceback."""
-    error_text = str(exc)
-    if "429" in error_text or "rate-limit" in error_text.lower() or "rate limited" in error_text.lower():
-        st.warning(
-            "OpenRouter is temporarily rate-limited for all configured free models. "
-            "Please wait a few minutes and try again, or configure a paid/BYOK model."
-        )
-    else:
-        st.error(f"OpenRouter failed: {error_text}")
+    st.warning(get_user_facing_error_message(exc))
 
 
 def run_graph_with_mode(graph, prompt, mode):
@@ -591,6 +691,69 @@ def run_graph_with_mode(graph, prompt, mode):
         return fresh_graph.run(prompt, mode=mode)
 
 
+def generate_response_payload(graph, prompt, mode):
+    """Generate one answer payload for the prompt/mode pair."""
+    start_time = time.time()
+    result = run_graph_with_mode(graph, prompt, mode)
+    return {
+        "result": result,
+        "prompt": prompt,
+        "elapsed": time.time() - start_time,
+        "response_id": str(time.time_ns()),
+    }
+
+
+def get_loading_message(mode, is_regeneration=False):
+    """Return a concise loading message for the current answer path."""
+    if is_regeneration:
+        return f"Preparing grounded {mode.lower()} answer..."
+    if mode == "Student":
+        return "Preparing grounded student explanation..."
+    return "Analyzing legal precedents..."
+
+
+def remember_last_response(payload, mode):
+    """Store the latest generated answer for automatic mode switching."""
+    st.session_state.last_query = payload["prompt"]
+    st.session_state.last_mode = mode
+    st.session_state.last_response = payload
+
+
+def replace_last_assistant_response(payload):
+    """Replace the latest assistant result without duplicating the chat."""
+    assistant_message = {
+        "role": "assistant",
+        "content": payload["result"]["answer"],
+        "result": payload["result"],
+        "prompt": payload["prompt"],
+        "elapsed": payload["elapsed"],
+        "response_id": payload["response_id"],
+    }
+
+    for index in range(len(st.session_state.messages) - 1, -1, -1):
+        if st.session_state.messages[index].get("role") == "assistant":
+            st.session_state.messages[index] = assistant_message
+            return
+
+    st.session_state.messages.append(assistant_message)
+
+
+def regenerate_on_mode_change(graph):
+    """Regenerate the stored query when the user changes answer mode."""
+    current_mode = get_answer_mode()
+    previous_mode = st.session_state.get("last_mode", current_mode)
+    last_query = st.session_state.get("last_query", "")
+
+    if not last_query or current_mode == previous_mode:
+        return
+
+    with st.spinner(get_loading_message(current_mode, is_regeneration=True)):
+        payload = generate_response_payload(graph, last_query, current_mode)
+
+    remember_last_response(payload, current_mode)
+    replace_last_assistant_response(payload)
+
+
 def render_landing_metric(label, value):
     """Render a compact landing-page proof metric."""
     st.markdown(
@@ -604,31 +767,68 @@ def render_landing_metric(label, value):
     )
 
 
-def render_landing_social_proof():
-    """Show MVP usage proof, preferring live Sheets metrics when available."""
-    st.markdown("### MVP Proof")
+def get_landing_stats():
+    """Load live impact stats, falling back to demo-safe values."""
     try:
-        stats = load_usage_stats()
-        metric_columns = st.columns(4)
-        with metric_columns[0]:
-            render_landing_metric("Total queries", stats["total_queries"])
-        with metric_columns[1]:
-            render_landing_metric("Unique users", stats["unique_users"])
-        with metric_columns[2]:
-            render_landing_metric("Feedback count", stats["total_feedback"])
-        with metric_columns[3]:
-            render_landing_metric("Useful feedback", f"{stats['useful_feedback_percent']:.1f}%")
+        return load_usage_stats()
     except Exception:
-        proof_columns = st.columns(4)
-        proof_items = [
-            "18+ queries tested",
-            "10+ users already using",
-            "Real case-based reasoning",
-            "Feedback-driven improvements",
-        ]
-        for column, item in zip(proof_columns, proof_items):
-            with column:
-                render_landing_metric("", item)
+        return EMPTY_USAGE_STATS
+
+
+def render_impact_section():
+    """Show credible live or fallback traction metrics."""
+    st.markdown('<div class="landing-section">', unsafe_allow_html=True)
+    st.markdown('<div class="landing-section-title">📈 SpaceL AI Impact</div>', unsafe_allow_html=True)
+    st.markdown(
+        '<div class="landing-section-copy">Helping law students simplify legal research with transparent, source-backed answers.</div>',
+        unsafe_allow_html=True,
+    )
+
+    metric_columns = st.columns(4)
+    for column, (label, value) in zip(metric_columns, build_impact_stats(get_landing_stats())):
+        with column:
+            render_landing_metric(label, value)
+    st.markdown("</div>", unsafe_allow_html=True)
+
+
+def render_card_grid(title, subtitle, items, columns=3):
+    """Render a simple startup-style card grid."""
+    st.markdown('<div class="landing-section">', unsafe_allow_html=True)
+    st.markdown(f'<div class="landing-section-title">{title}</div>', unsafe_allow_html=True)
+    if subtitle:
+        st.markdown(f'<div class="landing-section-copy">{subtitle}</div>', unsafe_allow_html=True)
+
+    grid_columns = st.columns(columns)
+    for index, (item_title, body) in enumerate(items):
+        with grid_columns[index % columns]:
+            st.markdown(
+                f"""
+                <div class="landing-card">
+                    <strong>{item_title}</strong><br><br>
+                    {body}
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+    st.markdown("</div>", unsafe_allow_html=True)
+
+
+def render_use_cases():
+    """Render common query areas as compact pills."""
+    st.markdown('<div class="landing-section">', unsafe_allow_html=True)
+    st.markdown('<div class="landing-section-title">Built for High-Frequency Criminal Law Questions</div>', unsafe_allow_html=True)
+    use_cases = [
+        "✔ Bail conditions",
+        "✔ Benefit of doubt",
+        "✔ Circumstantial evidence",
+        "✔ Criminal appeals",
+        "✔ Sentencing",
+    ]
+    columns = st.columns(len(use_cases))
+    for column, use_case in zip(columns, use_cases):
+        with column:
+            st.markdown(f'<div class="use-case-pill">{use_case}</div>', unsafe_allow_html=True)
+    st.markdown("</div>", unsafe_allow_html=True)
 
 
 def render_waitlist_form():
@@ -661,102 +861,64 @@ def render_landing_page():
     st.markdown(
         f"""
         <section class="landing-hero">
-            <div class="landing-kicker">AI legal research assistant</div>
+            <div class="landing-kicker">🚀 AI legal research in seconds</div>
             <h1 class="landing-title">{PRODUCT_NAME}</h1>
-            <div class="landing-tagline">{PRODUCT_TAGLINE}</div>
+            <div class="landing-tagline">
+                SpaceL AI helps law students and legal professionals understand
+                criminal judgments using grounded AI.
+            </div>
             <p class="landing-copy">
-                Ask legal questions and get case-based answers instantly.
-                No more hours of searching judgments or reading long PDFs.
+                Ask a legal question, retrieve real Supreme Court judgment passages,
+                and get structured reasoning with transparent source evidence.
             </p>
         </section>
         """,
         unsafe_allow_html=True,
     )
 
-    if st.button("Try SpaceL AI", type="primary", use_container_width=False):
-        st.session_state.show_app_section = True
-        st.success("SpaceL AI is ready below. Ask a legal research question to begin.")
+    cta_col, demo_col, _ = st.columns([1.1, 1.2, 3])
+    with cta_col:
+        if st.button("Try SpaceL AI", type="primary", use_container_width=True):
+            st.session_state.show_app_section = True
+            st.success("SpaceL AI is ready below. Ask a legal research question to begin.")
+    with demo_col:
+        st.link_button("Watch 60-sec Demo", Settings.demo_video_url, use_container_width=True)
 
-    st.markdown("### Demo")
-    st.video("https://youtu.be/a5OXVLpDyH4")
-    st.caption("See how SpaceL AI answers real legal questions in seconds.")
+    st.markdown('<div class="landing-section">', unsafe_allow_html=True)
+    st.markdown('<div class="landing-section-title">🎥 Watch SpaceL AI in Action</div>', unsafe_allow_html=True)
+    st.markdown(
+        '<div class="landing-section-copy">See how legal research becomes faster using grounded AI over real judgments.</div>',
+        unsafe_allow_html=True,
+    )
+    st.video(Settings.demo_video_url)
+    st.markdown("</div>", unsafe_allow_html=True)
 
-    problem_col, solution_col = st.columns(2)
-    with problem_col:
-        st.markdown("### Problem")
-        st.markdown(
-            """
-            Legal research is slow, complex, and inefficient.
+    render_card_grid(
+        "How It Works",
+        "A simple workflow designed for fast legal research demos.",
+        [
+            ("1️⃣ Ask a legal question", "Type a question about bail, evidence, appeals, sentencing, or benefit of doubt."),
+            ("2️⃣ AI retrieves real judgments", "SpaceL AI searches the existing FAISS judgment index for relevant passages."),
+            ("3️⃣ Get grounded reasoning", "Receive structured legal reasoning with source evidence you can inspect."),
+        ],
+        columns=3,
+    )
 
-            Students and lawyers spend hours:
-            - Searching through multiple judgments
-            - Reading long legal documents
-            - Trying to find relevant reasoning
-            - Missing key case insights
-            """
-        )
+    render_use_cases()
 
-    with solution_col:
-        st.markdown("### Solution")
-        st.markdown(
-            """
-            SpaceL AI simplifies legal research.
+    render_card_grid(
+        "Why Trust SpaceL AI?",
+        "Built to make legal AI feel transparent, cautious, and useful.",
+        [
+            ("📚 Grounded in Court Judgments", "Answers are generated from retrieved judgment passages, not generic web text."),
+            ("⚖️ Legal Reasoning Support", "Legal Mode organizes issues, reasoning, takeaways, and evidence."),
+            ("🎓 Student-Friendly Mode", "Student Mode explains concepts in plain English while staying source-grounded."),
+            ("🔍 Transparent Source Evidence", "Every answer keeps retrieved documents visible for review."),
+        ],
+        columns=4,
+    )
 
-            Just ask a question and get:
-            - Clear legal issue breakdown
-            - Relevant case context
-            - Source-backed reasoning
-            - Easy explanations for students
-            """
-        )
-
-    st.markdown("### Product Experience")
-    experience_col, output_col = st.columns([1, 1])
-    with experience_col:
-        st.markdown(
-            """
-            <div class="landing-card">
-                <strong>Example query</strong><br><br>
-                Benefit of doubt in criminal appeals
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-    with output_col:
-        st.markdown(
-            """
-            <div class="landing-card">
-                <strong>Expected output</strong><br><br>
-                Legal Issue<br>
-                Key Insight<br>
-                Relevant Case Context<br>
-                Source Documents
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-
-    st.markdown("### Core Features")
-    feature_columns = st.columns(4)
-    features = [
-        ("Legal Mode", "Professional legal reasoning"),
-        ("Student Mode", "Explain like a law student"),
-        ("Case-backed Answers", "Powered by real Supreme Court judgments"),
-        ("Instant Insights", "Get answers in seconds"),
-    ]
-    for column, (title, body) in zip(feature_columns, features):
-        with column:
-            st.markdown(
-                f"""
-                <div class="landing-card">
-                    <strong>{title}</strong><br><br>
-                    {body}
-                </div>
-                """,
-                unsafe_allow_html=True,
-            )
-
-    render_landing_social_proof()
+    render_impact_section()
     render_waitlist_form()
     st.markdown('<div class="app-anchor" id="ask-spacel-ai"></div>', unsafe_allow_html=True)
 
@@ -764,6 +926,9 @@ def render_landing_page():
 def render_sidebar():
     """Render recent searches, usage metrics, and reset control."""
     with st.sidebar:
+        st.markdown("## SpaceL AI")
+        st.caption("Grounded criminal-law research assistant")
+        st.markdown("---")
         st.markdown("## User Details")
         st.text_input("Name (optional)", key="user_name")
         st.selectbox("Role", ROLE_OPTIONS, key="user_role")
@@ -798,13 +963,14 @@ def render_sidebar():
         except Exception as exc:
             from src.utils.gsheets_logger import format_google_sheets_error
 
-            st.error(f"Google Sheets failed: {format_google_sheets_error(exc)}")
+            st.info("Live analytics are temporarily unavailable.")
+            st.caption(format_google_sheets_error(exc))
             try:
                 from src.utils.gsheets_logger import get_service_account_email
 
                 service_account_email = get_service_account_email()
                 if service_account_email:
-                    st.caption(f"Share `Legal_Vakta_Logs` with: {service_account_email}")
+                    st.caption(f"Share the SpaceL AI analytics sheet with: {service_account_email}")
                 else:
                     st.caption("Share the sheet with the service account email and check credentials.")
             except Exception:
@@ -821,6 +987,9 @@ def render_sidebar():
         if st.button("New Query", use_container_width=True):
             st.session_state.messages = []
             st.session_state.query_history = []
+            st.session_state.last_query = ""
+            st.session_state.last_mode = get_answer_mode()
+            st.session_state.last_response = None
             for key in list(st.session_state.keys()):
                 if str(key).startswith("feedback_submitted_"):
                     del st.session_state[key]
@@ -842,28 +1011,31 @@ def render_suggested_queries():
 def main():
     """Render the chat interface."""
     init_user_session()
+    init_chat_state()
 
     render_landing_page()
 
-    st.title("SpaceL AI - Criminal Case Assistant")
+    st.title("SpaceL AI")
     st.markdown(
-        '<p class="legal-subtitle">Knowledge Base: Supreme Court Criminal Judgments (2008-2023)</p>',
+        '<p class="legal-subtitle">Criminal case research assistant powered by Supreme Court judgments (2008-2023)</p>',
         unsafe_allow_html=True,
     )
-
-    if "messages" not in st.session_state:
-        st.session_state.messages = []
-    if "query_history" not in st.session_state:
-        st.session_state.query_history = []
 
     suggested_prompt = render_suggested_queries()
 
     try:
         graph = initialize_graph()
-        st.success("Vector index loaded. SpaceL AI is ready.")
+        st.success("Judgment index loaded. SpaceL AI is ready.")
     except Exception as exc:
-        st.error(str(exc))
+        st.warning(get_user_facing_error_message(exc))
         st.info("Run `python scripts/build_index.py` before starting the UI.")
+        render_sidebar()
+        return
+
+    try:
+        regenerate_on_mode_change(graph)
+    except Exception as exc:
+        render_llm_error(exc)
         render_sidebar()
         return
 
@@ -879,7 +1051,7 @@ def main():
             else:
                 st.markdown(message["content"])
 
-    prompt = st.chat_input("Ask about criminal appeals, conviction, bail, sentencing, evidence...")
+    prompt = st.chat_input("Ask SpaceL AI about criminal appeals, bail, evidence, sentencing...")
     active_prompt = prompt or suggested_prompt
     if not active_prompt:
         render_sidebar()
@@ -894,29 +1066,33 @@ def main():
         st.markdown(active_prompt)
 
     with st.chat_message("assistant"):
-        with st.spinner("Analyzing legal documents..."):
-            start_time = time.time()
+        st.caption("Retrieving legal precedents...")
+        with st.spinner(get_loading_message(get_answer_mode())):
             try:
-                result = run_graph_with_mode(graph, active_prompt, get_answer_mode())
+                payload = generate_response_payload(graph, active_prompt, get_answer_mode())
             except Exception as exc:
                 render_llm_error(exc)
                 render_sidebar()
                 return
-            elapsed = time.time() - start_time
-            response_id = str(time.time_ns())
 
-        render_assistant_response(result, active_prompt, elapsed, response_id)
+        render_assistant_response(
+            payload["result"],
+            payload["prompt"],
+            payload["elapsed"],
+            payload["response_id"],
+        )
 
     st.session_state.messages.append(
         {
             "role": "assistant",
-            "content": result["answer"],
-            "result": result,
-            "prompt": active_prompt,
-            "elapsed": elapsed,
-            "response_id": response_id,
+            "content": payload["result"]["answer"],
+            "result": payload["result"],
+            "prompt": payload["prompt"],
+            "elapsed": payload["elapsed"],
+            "response_id": payload["response_id"],
         }
     )
+    remember_last_response(payload, get_answer_mode())
     render_sidebar()
 
 

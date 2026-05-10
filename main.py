@@ -1,20 +1,20 @@
-"""Command-line entry point for Legal Vakta."""
+"""Command-line entry point for SpaceL AI."""
 
 from src.agent.graph_builder import GraphBuilder
 from src.config import Settings, get_llm
 from src.retrieval.vectorstore import get_retriever, load_vectorstore
 
 
-class LegalVaktaRAG:
-    """Production-facing wrapper around the Legal Vakta graph."""
+class SpaceLAIRAG:
+    """Production-facing wrapper around the SpaceL AI graph."""
 
     def __init__(self):
-        print("Initializing Legal Vakta...")
+        print("Initializing SpaceL AI...")
         vectorstore = load_vectorstore(Settings.vectorstore_dir)
         retriever = get_retriever(vectorstore, k=Settings.retriever_k)
         self.graph = GraphBuilder(retriever=retriever, llm=get_llm())
         self.graph.build()
-        print("Legal Vakta is ready.\n")
+        print("SpaceL AI is ready.\n")
 
     def ask(self, question: str) -> str:
         """Ask a question and print the answer with sources."""
@@ -30,7 +30,7 @@ class LegalVaktaRAG:
         return result["answer"]
 
     def interactive_mode(self):
-        """Run Legal Vakta in a terminal chat loop."""
+        """Run SpaceL AI in a terminal chat loop."""
         print("Ask a criminal case research question. Type 'quit' to exit.\n")
         while True:
             question = input("Question: ").strip()
@@ -45,7 +45,7 @@ class LegalVaktaRAG:
 def main():
     """Start the CLI assistant."""
     try:
-        rag = LegalVaktaRAG()
+        rag = SpaceLAIRAG()
     except FileNotFoundError as exc:
         print(exc)
         print("Run `python scripts/build_index.py` first.")

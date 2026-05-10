@@ -1,4 +1,4 @@
-"""Google Sheets logging for Legal Vakta MVP usage tracking."""
+"""Google Sheets logging for SpaceL AI MVP usage tracking."""
 
 from datetime import datetime
 from typing import Dict, List, Optional
@@ -92,19 +92,19 @@ def format_google_sheets_error(exc: Exception) -> str:
     if "quota" in normalized or "storage quota" in normalized:
         return (
             "Google Drive storage quota exceeded. The app will not create a new "
-            "spreadsheet or worksheet. Open the existing Legal_Vakta_Logs sheet, "
+            "spreadsheet or worksheet. Open the existing SpaceL AI analytics sheet, "
             "confirm GOOGLE_SHEET_ID is correct, and free Drive storage if needed."
         )
     if "worksheet" in normalized or "queries and feedback" in normalized:
         return MISSING_WORKSHEETS_MESSAGE
     if "403" in normalized or "permission" in normalized or "shared" in normalized:
         return (
-            "Google Sheet access failed. Share Legal_Vakta_Logs with the service "
+            "Google Sheet access failed. Share the SpaceL AI analytics sheet with the service "
             "account email using Editor access."
         )
     if "not found" in normalized or "could not open" in normalized:
         return (
-            "Could not open the existing Google Sheet Legal_Vakta_Logs. Confirm "
+            "Could not open the existing SpaceL AI analytics sheet. Confirm "
             "the sheet exists and GOOGLE_SHEET_ID points to it."
         )
     return error_text

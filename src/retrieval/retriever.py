@@ -1,4 +1,4 @@
-"""Explainable retrieval helpers for Legal Vakta."""
+"""Explainable retrieval helpers for SpaceL AI."""
 
 from pathlib import Path
 from typing import Dict, List

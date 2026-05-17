@@ -9,7 +9,8 @@ SHEET_NAME = "Legal_Vakta_Logs"
 QUERIES_WORKSHEET = "queries"
 FEEDBACK_WORKSHEET = "feedback"
 WAITLIST_WORKSHEET = "waitlist"
-QUERY_HEADERS = ["timestamp", "user_id", "name", "email", "role", "query"]
+QUERY_HEADERS = ["timestamp", "user_id", "query", "role", "confidence", "source"]
+LEGACY_QUERY_HEADERS = ["timestamp", "user_id", "name", "email", "role", "query"]
 FEEDBACK_HEADERS = ["timestamp", "user_id", "name", "role", "query", "feedback"]
 WAITLIST_HEADERS = ["timestamp", "user_id", "name", "email", "role", "source"]
 MISSING_WORKSHEETS_MESSAGE = "Please create worksheets named queries and feedback manually."
@@ -110,25 +111,39 @@ def format_google_sheets_error(exc: Exception) -> str:
     return error_text
 
 
-def get_or_create_worksheet(spreadsheet, title: str, headers: List[str]):
-    """Return an existing worksheet and verify headers without creating worksheets."""
+def ensure_worksheet(spreadsheet, title: str, headers: List[str], create_missing: bool = False):
+    """Return a worksheet with the expected headers, creating/updating where safe."""
     try:
         worksheet = spreadsheet.worksheet(title)
     except Exception as exc:
-        raise RuntimeError(MISSING_WORKSHEETS_MESSAGE) from exc
+        if not create_missing:
+            raise RuntimeError(MISSING_WORKSHEETS_MESSAGE) from exc
+        worksheet = spreadsheet.add_worksheet(title=title, rows=1, cols=len(headers))
+        worksheet.update(range_name=f"A1:{chr(64 + len(headers))}1", values=[headers])
+        return worksheet
 
     existing_values = worksheet.get_all_values()
     if not existing_values:
-        raise RuntimeError(
-            f"Worksheet '{title}' is empty. Add this header row manually: "
-            f"{','.join(headers)}"
-        )
+        worksheet.update(range_name=f"A1:{chr(64 + len(headers))}1", values=[headers])
+        return worksheet
+
+    # The queries sheet used to contain profile columns. Update only the header row
+    # so future appended query analytics use the clean MVP schema and column count.
+    if title == QUERIES_WORKSHEET and existing_values[0][: len(LEGACY_QUERY_HEADERS)] == LEGACY_QUERY_HEADERS:
+        worksheet.update(range_name="A1:F1", values=[headers])
+        return worksheet
+
     if existing_values[0][: len(headers)] != headers:
         raise RuntimeError(
             f"Worksheet '{title}' has incorrect headers. Expected: "
             f"{','.join(headers)}"
         )
     return worksheet
+
+
+def get_or_create_worksheet(spreadsheet, title: str, headers: List[str]):
+    """Return an existing worksheet and verify or initialize its headers."""
+    return ensure_worksheet(spreadsheet, title, headers, create_missing=False)
 
 
 def get_or_create_waitlist_worksheet(spreadsheet):
@@ -170,7 +185,7 @@ def get_or_create_waitlist_worksheet(spreadsheet):
 def append_record(worksheet_name: str, headers: List[str], row: Dict, spreadsheet=None):
     """Append one record to a worksheet."""
     active_spreadsheet = spreadsheet or get_spreadsheet()
-    worksheet = get_or_create_worksheet(active_spreadsheet, worksheet_name, headers)
+    worksheet = ensure_worksheet(active_spreadsheet, worksheet_name, headers)
     worksheet.append_row([row.get(header, "") for header in headers])
 
 
@@ -181,19 +196,65 @@ def get_records(worksheet_name: str, headers: List[str], spreadsheet=None) -> Li
     return worksheet.get_all_records()
 
 
-def log_query(user_id: str, name: str, email: str, role: str, query: str, spreadsheet=None):
-    """Log one user query to the queries worksheet."""
-    append_record(
-        QUERIES_WORKSHEET,
-        QUERY_HEADERS,
-        {
-            "timestamp": current_timestamp(),
-            "user_id": user_id,
-            "name": name,
-            "email": email or "N/A",
-            "role": role,
-            "query": query,
-        },
+def normalize_query_confidence(confidence: str) -> str:
+    """Keep query analytics confidence values within the approved sheet labels."""
+    if confidence in {"High", "Medium", "Low"}:
+        return confidence
+    return "N/A"
+
+
+def build_query_log_row(user_id: str, query: str, role: str, confidence: str, source: str):
+    """Build a query row in the exact queries sheet column order A-F."""
+    return [
+        current_timestamp(),
+        user_id,
+        query,
+        role,
+        normalize_query_confidence(confidence),
+        source,
+    ]
+
+
+def append_query_log(
+    user_id: str,
+    query: str,
+    role: str,
+    confidence: str = "N/A",
+    source: str = "chatbot_query",
+    spreadsheet=None,
+):
+    """Append one clean query analytics row without profile details."""
+    active_spreadsheet = spreadsheet or get_spreadsheet()
+    worksheet = ensure_worksheet(active_spreadsheet, QUERIES_WORKSHEET, QUERY_HEADERS)
+
+    # Column mapping is intentionally explicit to prevent old profile fields from
+    # shifting query, role, confidence, or source into the wrong Google Sheet cells.
+    row = build_query_log_row(
+        user_id=user_id,
+        query=query,
+        role=role,
+        confidence=confidence,
+        source=source,
+    )
+    worksheet.append_row(row, value_input_option="USER_ENTERED")
+
+
+def log_query(
+    user_id: str,
+    name: str = "",
+    email: str = "",
+    role: str = "",
+    query: str = "",
+    source: str = "chatbot_query",
+    spreadsheet=None,
+):
+    """Backward-compatible wrapper for clean query analytics logging."""
+    append_query_log(
+        user_id=user_id,
+        query=query,
+        role=role,
+        confidence="N/A",
+        source=source,
         spreadsheet=spreadsheet,
     )
 
@@ -229,22 +290,50 @@ def save_waitlist_lead(
     role: str,
     spreadsheet=None,
 ):
-    """Save one landing-page waitlist lead."""
+    """Create or update one waitlist lead, keyed by email."""
     if not email or "@" not in email:
         raise ValueError("A valid email address is required.")
 
+    clean_name = name.strip() if name else ""
+    clean_email = email.strip()
+    clean_role = role.strip() if role else ""
     active_spreadsheet = spreadsheet or get_spreadsheet()
     worksheet = get_or_create_waitlist_worksheet(active_spreadsheet)
+
+    email_key = clean_email.lower()
+    records = worksheet.get_all_records()
+    for index, record in enumerate(records, start=2):
+        existing_email = str(record.get("email", "")).strip()
+        if existing_email.lower() != email_key:
+            continue
+
+        existing_name = str(record.get("name", "")).strip()
+        existing_role = str(record.get("role", "")).strip()
+        if existing_name == clean_name and existing_role == clean_role:
+            return "existing"
+
+        updated_row = [
+            str(record.get("timestamp", "")).strip() or current_timestamp(),
+            str(record.get("user_id", "")).strip() or user_id,
+            clean_name,
+            existing_email,
+            clean_role,
+            str(record.get("source", "")).strip() or "waitlist_form",
+        ]
+        worksheet.update(range_name=f"A{index}:F{index}", values=[updated_row])
+        return "updated"
+
     worksheet.append_row(
         [
             current_timestamp(),
             user_id,
-            name,
-            email,
-            role,
-            "landing_page",
+            clean_name,
+            clean_email,
+            clean_role,
+            "waitlist_form",
         ]
     )
+    return "created"
 
 
 def calculate_usage_stats(query_records: List[Dict], feedback_records: List[Dict]):

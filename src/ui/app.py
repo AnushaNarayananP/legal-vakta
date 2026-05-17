@@ -1,14 +1,15 @@
 """Streamlit UI for SpaceL AI."""
 
 import csv
+import inspect
 import sys
 import time
-import uuid
 from datetime import datetime
 from pathlib import Path
 
 import pandas as pd
 import streamlit as st
+import streamlit.components.v1 as components
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
@@ -45,6 +46,14 @@ SUGGESTED_QUERY_LABELS = [
 ]
 ROLE_OPTIONS = ["Law Student", "Lawyer", "Researcher", "Other"]
 ANSWER_MODE_OPTIONS = ["Legal", "Student"]
+LOCAL_STORAGE_USER_ID_KEY = "spacel_user_id"
+LOCAL_STORAGE_UNSET = object()
+QUERY_SOURCE_CHATBOT = "chatbot_query"
+QUERY_SOURCE_SUGGESTED = "suggested_query"
+QUERY_SOURCE_MODE_REGENERATION = "mode_regeneration"
+QUERY_SOURCE_MANUAL_TEST = "manual_test"
+PENDING_QUERY_KEY = "pending_query"
+PENDING_QUERY_SOURCE_KEY = "pending_query_source"
 EMPTY_USAGE_STATS = {
     "total_queries": 0,
     "unique_users": 0,
@@ -221,10 +230,163 @@ def current_timestamp():
     return datetime.now().isoformat(timespec="seconds")
 
 
+def normalize_user_id(value):
+    """Return a clean user ID string, or empty string when storage returned nothing."""
+    if isinstance(value, list):
+        value = value[0] if value else ""
+    if not isinstance(value, str):
+        return ""
+    return value.strip()
+
+
+def get_query_param_user_id(query_params=None):
+    """Read the browser-confirmed user ID passed from the localStorage bridge."""
+    params = query_params if query_params is not None else st.query_params
+    try:
+        return normalize_user_id(params.get(LOCAL_STORAGE_USER_ID_KEY, ""))
+    except Exception:
+        return ""
+
+
+def embed_inline_html(html, **kwargs):
+    """Render trusted inline HTML/JS across current and post-deprecation Streamlit."""
+    st_html = getattr(st, "html", None)
+    if st_html is not None:
+        try:
+            signature = inspect.signature(st_html)
+        except (TypeError, ValueError):
+            signature = None
+
+        if signature and "unsafe_allow_javascript" in signature.parameters:
+            st_html(html, width="stretch", unsafe_allow_javascript=True)
+            return
+
+    components.html(html, **kwargs)
+
+
+def render_user_id_bridge():
+    """Create/read browser cookie (cross-port) and mirror the ID into the Streamlit URL.
+
+    Cookies on localhost are shared across all ports, unlike localStorage
+    which is origin-scoped (port-specific).  This prevents user_id
+    fragmentation when the app restarts on a different port.
+    """
+    embed_inline_html(
+        f"""
+        <script>
+        (() => {{
+            /* ---- cookie helpers ---- */
+            function getCookie(name) {{
+                const match = document.cookie.match(
+                    new RegExp('(?:^|; )' + name + '=([^;]*)')
+                );
+                return match ? decodeURIComponent(match[1]) : null;
+            }}
+            function setCookie(name, value, days) {{
+                const expires = new Date(
+                    Date.now() + days * 864e5
+                ).toUTCString();
+                document.cookie = name + '=' + encodeURIComponent(value)
+                    + '; expires=' + expires
+                    + '; path=/; SameSite=Lax';
+            }}
+
+            /* ---- identity resolution: cookie → localStorage → generate ---- */
+            const key = "{LOCAL_STORAGE_USER_ID_KEY}";
+            let id = getCookie(key)
+                  || window.localStorage.getItem(key);
+
+            if (!id) {{
+                const randomId = (
+                    window.crypto && window.crypto.randomUUID
+                ) ? window.crypto.randomUUID() : (
+                    Date.now().toString(36) + "-"
+                    + Math.random().toString(36).slice(2)
+                );
+                id = "user_" + randomId;
+            }}
+
+            /* dual-write: cookie (cross-port) + localStorage (compat) */
+            setCookie(key, id, 365);
+            window.localStorage.setItem(key, id);
+
+            /* mirror to URL query params for Python to read */
+            const parentUrl = new URL(window.parent.location.href);
+            if (parentUrl.searchParams.get(key) !== id) {{
+                parentUrl.searchParams.set(key, id);
+                window.parent.history.replaceState(null, "", parentUrl.toString());
+                window.parent.location.reload();
+            }}
+        }})();
+        </script>
+        """,
+        height=0,
+    )
+
+
+def get_persistent_user_id(
+    state=None,
+    local_storage_id=LOCAL_STORAGE_UNSET,
+    generate_uuid=None,
+    query_params=None,
+):
+    """
+    Return only a browser-confirmed analytics ID.
+
+    Streamlit session fallback IDs are intentionally not created here because
+    analytics must not write to Google Sheets until browser localStorage is ready.
+    """
+    active_state = state if state is not None else st.session_state
+    browser_value = local_storage_id
+    if browser_value is LOCAL_STORAGE_UNSET:
+        browser_value = get_query_param_user_id(query_params)
+
+    stored_id = normalize_user_id(browser_value)
+    if stored_id:
+        active_state["user_id"] = stored_id
+        active_state["local_storage_user_id"] = stored_id
+        return stored_id
+
+    existing_id = normalize_user_id(active_state.get("local_storage_user_id", ""))
+    if existing_id:
+        active_state["user_id"] = existing_id
+        return existing_id
+
+    return ""
+
+
+def reset_browser_user_id():
+    """Clear the persistent browser user ID from cookie and localStorage."""
+    embed_inline_html(
+        f"""
+        <script>
+        /* clear cookie by setting expired date */
+        document.cookie = "{LOCAL_STORAGE_USER_ID_KEY}="
+            + "; expires=Thu, 01 Jan 1970 00:00:00 GMT; path=/";
+        window.localStorage.removeItem("{LOCAL_STORAGE_USER_ID_KEY}");
+        const parentUrl = new URL(window.parent.location.href);
+        parentUrl.searchParams.delete("{LOCAL_STORAGE_USER_ID_KEY}");
+        window.parent.history.replaceState(null, "", parentUrl.toString());
+        window.parent.location.reload();
+        </script>
+        """,
+        height=0,
+    )
+    return True
+
+
+def clear_session_user_id(state):
+    """Remove mirrored identity values from Streamlit session state."""
+    state.pop("user_id", None)
+    state.pop("local_storage_user_id", None)
+    state.pop("user_id_source", None)
+    state.pop("_last_browser_user_id", None)
+
+
 def init_user_session():
-    """Create lightweight anonymous session identity."""
-    if "user_id" not in st.session_state:
-        st.session_state.user_id = str(uuid.uuid4())
+    """Create or load the persistent anonymous analytics identity."""
+    get_persistent_user_id()
+
     if "user_name" not in st.session_state:
         st.session_state.user_name = ""
     if "user_role" not in st.session_state:
@@ -236,11 +398,16 @@ def init_user_session():
 def get_user_profile():
     """Read current optional user profile from session state."""
     return {
-        "user_id": st.session_state.get("user_id", ""),
+        "user_id": get_persistent_user_id(),
         "name": st.session_state.get("user_name", ""),
         "role": st.session_state.get("user_role", ""),
         "email": st.session_state.get("email", "") or "N/A",
     }
+
+
+def is_user_id_ready():
+    """Return True only when browser localStorage has confirmed the analytics ID."""
+    return bool(get_persistent_user_id())
 
 
 def get_answer_mode():
@@ -292,39 +459,98 @@ def connect_google_sheets():
     return spreadsheet, query_sheet, feedback_sheet
 
 
-def log_query(query, user_id="", name="", role="", email="", query_log_path=None):
+def log_query(
+    query,
+    user_id="",
+    name="",
+    role="",
+    email="",
+    confidence="N/A",
+    source=QUERY_SOURCE_CHATBOT,
+    query_log_path=None,
+):
     """Persist a user query to Google Sheets, or CSV when a path is supplied."""
     if query_log_path is not None:
         append_csv_row(
             query_log_path,
-            fieldnames=["timestamp", "user_id", "name", "email", "role", "query"],
+            fieldnames=["timestamp", "user_id", "query", "role", "confidence", "source"],
             row={
                 "timestamp": current_timestamp(),
                 "user_id": user_id,
-                "name": name,
-                "email": email or "N/A",
-                "role": role,
                 "query": query,
+                "role": role,
+                "confidence": confidence,
+                "source": source,
             },
         )
         return True
 
     try:
-        _, query_sheet, _ = connect_google_sheets()
-        query_sheet.append_row(
-            [
-                current_timestamp(),
-                user_id,
-                name,
-                email or "N/A",
-                role,
-                query,
-            ]
+        from src.utils.gsheets_logger import append_query_log
+
+        append_query_log(
+            user_id=user_id,
+            query=query,
+            role=role,
+            confidence=confidence,
+            source=source,
         )
         return True
     except Exception:
         st.caption("Query analytics are temporarily offline. Your answer experience is unaffected.")
         return False
+
+
+def get_prompt_source(prompt, suggested_prompt):
+    """Return the analytics source for the active prompt path."""
+    if prompt:
+        return QUERY_SOURCE_CHATBOT
+    if suggested_prompt:
+        return QUERY_SOURCE_SUGGESTED
+    return QUERY_SOURCE_CHATBOT
+
+
+def get_active_prompt_and_source(prompt, suggested_prompt):
+    """Return the prompt and source, giving an explicit suggested click priority."""
+    if suggested_prompt:
+        return suggested_prompt, QUERY_SOURCE_SUGGESTED
+    if prompt:
+        return prompt, QUERY_SOURCE_CHATBOT
+    return "", QUERY_SOURCE_CHATBOT
+
+
+def queue_suggested_query(state, query):
+    """Store a clicked suggested query event for the next generation pass."""
+    state[PENDING_QUERY_KEY] = query
+    state[PENDING_QUERY_SOURCE_KEY] = QUERY_SOURCE_SUGGESTED
+
+
+def consume_pending_query_event(state, typed_prompt=None):
+    """Return the active query event and clear pending event state."""
+    pending_query = state.pop(PENDING_QUERY_KEY, "")
+    pending_source = state.pop(PENDING_QUERY_SOURCE_KEY, None)
+
+    if pending_query:
+        return pending_query, pending_source or QUERY_SOURCE_SUGGESTED
+    if typed_prompt:
+        return typed_prompt, QUERY_SOURCE_CHATBOT
+    return "", QUERY_SOURCE_CHATBOT
+
+
+def log_generated_query(payload, source=QUERY_SOURCE_CHATBOT):
+    """Persist analytics for a successfully generated answer payload."""
+    profile = get_user_profile()
+    if not profile["user_id"]:
+        return False
+
+    result = payload.get("result", {})
+    return log_query(
+        payload.get("prompt", ""),
+        user_id=profile["user_id"],
+        role=profile["role"],
+        confidence=get_confidence_label(result.get("retrieved_docs", [])),
+        source=source,
+    )
 
 
 def save_feedback(
@@ -372,24 +598,23 @@ def save_feedback(
 
 
 def save_waitlist_lead(user_id, name, email, role):
-    """Persist one landing-page waitlist lead to Google Sheets."""
+    """Persist one waitlist lead to Google Sheets."""
     if not email or "@" not in email:
         st.error("Please enter a valid email address.")
-        return False
+        return ""
 
     try:
         from src.utils.gsheets_logger import save_waitlist_lead as save_lead_to_sheets
 
-        save_lead_to_sheets(
+        return save_lead_to_sheets(
             user_id=user_id,
             name=name,
             email=email,
             role=role,
         )
-        return True
     except Exception:
         st.warning("Waitlist signup is temporarily unavailable. Please try again shortly.")
-        return False
+        return ""
 
 
 def count_csv_rows(path):
@@ -578,15 +803,26 @@ def render_answer_sections(answer, mode="Legal"):
 
 def render_confidence_indicator(docs):
     """Display confidence based on number of retrieved documents."""
+    confidence = get_confidence_label(docs)
     doc_count = len(docs or [])
-    if doc_count >= 4:
+    if confidence == "High":
         st.success(f"High confidence ({doc_count} documents retrieved)")
-    elif doc_count >= 2:
-        st.warning(f"Moderate confidence ({doc_count} documents retrieved)")
+    elif confidence == "Medium":
+        st.warning(f"Medium confidence ({doc_count} documents retrieved)")
     else:
         st.info(
             "⚖️ Limited direct case context found. SpaceL AI will provide the best grounded explanation available."
         )
+
+
+def get_confidence_label(docs):
+    """Return the compact confidence label saved with query analytics."""
+    doc_count = len(docs or [])
+    if doc_count >= 4:
+        return "High"
+    if doc_count >= 2:
+        return "Medium"
+    return "Low"
 
 
 def render_retrieved_documents(docs):
@@ -633,11 +869,12 @@ def render_feedback_controls(prompt, response_id):
         st.caption("Feedback recorded. Thank you.")
         return
 
+    user_id_ready = is_user_id_ready()
     st.markdown("### Feedback")
     useful_col, not_useful_col = st.columns(2)
 
     with useful_col:
-        if st.button("Useful", key=f"useful_{response_id}", use_container_width=True):
+        if st.button("Useful", key=f"useful_{response_id}", use_container_width=True, disabled=not user_id_ready):
             profile = get_user_profile()
             if save_feedback(
                 prompt,
@@ -650,7 +887,7 @@ def render_feedback_controls(prompt, response_id):
                 st.success("Feedback saved to Google Sheets: useful")
 
     with not_useful_col:
-        if st.button("Not Useful", key=f"not_useful_{response_id}", use_container_width=True):
+        if st.button("Not Useful", key=f"not_useful_{response_id}", use_container_width=True, disabled=not user_id_ready):
             profile = get_user_profile()
             if save_feedback(
                 prompt,
@@ -661,6 +898,9 @@ def render_feedback_controls(prompt, response_id):
             ):
                 st.session_state[submitted_key] = True
                 st.warning("Feedback saved to Google Sheets: not useful")
+
+    if not user_id_ready:
+        st.caption("Preparing user ID... please wait.")
 
 
 def render_assistant_response(result, prompt, elapsed, response_id):
@@ -752,6 +992,7 @@ def regenerate_on_mode_change(graph):
 
     remember_last_response(payload, current_mode)
     replace_last_assistant_response(payload)
+    log_generated_query(payload, source=QUERY_SOURCE_MODE_REGENERATION)
 
 
 def render_landing_metric(label, value):
@@ -833,27 +1074,35 @@ def render_use_cases():
 
 def render_waitlist_form():
     """Collect early-access leads from the landing page."""
+    user_id_ready = is_user_id_ready()
     st.markdown("### Get early access to SpaceL AI")
     with st.form("waitlist_form", clear_on_submit=False):
         name = st.text_input("Name (optional)", key="waitlist_name")
         email = st.text_input("Email", key="waitlist_email")
         role = st.selectbox("Role", ROLE_OPTIONS, key="waitlist_role")
-        submitted = st.form_submit_button("Join Waitlist", use_container_width=True)
+        submitted = st.form_submit_button("Join Waitlist", use_container_width=True, disabled=not user_id_ready)
+
+    if not user_id_ready:
+        st.caption("Preparing user ID... please wait.")
 
     if not submitted:
         return
 
-    if save_waitlist_lead(
-        st.session_state.get("user_id", ""),
+    waitlist_result = save_waitlist_lead(
+        get_persistent_user_id(),
         name.strip(),
         email.strip(),
         role,
-    ):
+    )
+    if waitlist_result:
         st.session_state.email = email.strip()
         if name.strip():
             st.session_state.user_name = name.strip()
         st.session_state.user_role = role
-        st.success("You're on the SpaceL AI early access list.")
+        if waitlist_result == "created":
+            st.success("You're on the SpaceL AI early access list.")
+        else:
+            st.success("You're already on the SpaceL AI early access list.")
 
 
 def render_landing_page():
@@ -924,17 +1173,10 @@ def render_landing_page():
 
 
 def render_sidebar():
-    """Render recent searches, usage metrics, and reset control."""
+    """Render public controls and lightweight usage metrics."""
     with st.sidebar:
         st.markdown("## SpaceL AI")
         st.caption("Grounded criminal-law research assistant")
-        st.markdown("---")
-        st.markdown("## User Details")
-        st.text_input("Name (optional)", key="user_name")
-        st.selectbox("Role", ROLE_OPTIONS, key="user_role")
-        email = st.text_input("Enter your email (optional)", key="email")
-        if not email:
-            st.info("Enter your email to get updates and improvements")
 
         st.markdown("---")
         st.markdown("## Answer Mode")
@@ -996,22 +1238,23 @@ def render_sidebar():
             st.rerun()
 
 
-def render_suggested_queries():
-    """Render suggested query buttons and return the clicked query."""
+def render_suggested_queries(disabled=False):
+    """Render suggested query buttons and queue the clicked query event."""
     st.markdown("### Try these:")
     columns = st.columns([1, 1, 1], gap="small")
     for index, suggested_query in enumerate(SUGGESTED_QUERIES):
         with columns[index]:
             button_label = SUGGESTED_QUERY_LABELS[index]
-            if st.button(button_label, key=f"suggested_query_{index}", use_container_width=True):
-                return suggested_query
-    return None
+            if st.button(button_label, key=f"suggested_query_{index}", use_container_width=True, disabled=disabled):
+                queue_suggested_query(st.session_state, suggested_query)
 
 
 def main():
     """Render the chat interface."""
+    render_user_id_bridge()
     init_user_session()
     init_chat_state()
+    user_id_ready = is_user_id_ready()
 
     render_landing_page()
 
@@ -1021,7 +1264,10 @@ def main():
         unsafe_allow_html=True,
     )
 
-    suggested_prompt = render_suggested_queries()
+    if not user_id_ready:
+        st.info("Preparing user ID... please wait.")
+
+    render_suggested_queries(disabled=not user_id_ready)
 
     try:
         graph = initialize_graph()
@@ -1051,14 +1297,20 @@ def main():
             else:
                 st.markdown(message["content"])
 
-    prompt = st.chat_input("Ask SpaceL AI about criminal appeals, bail, evidence, sentencing...")
-    active_prompt = prompt or suggested_prompt
+    prompt = st.chat_input(
+        "Ask SpaceL AI about criminal appeals, bail, evidence, sentencing...",
+        disabled=not user_id_ready,
+    )
+    active_prompt, query_source = consume_pending_query_event(st.session_state, typed_prompt=prompt)
     if not active_prompt:
         render_sidebar()
         return
 
-    profile = get_user_profile()
-    log_query(active_prompt, **profile)
+    if not user_id_ready:
+        st.info("Preparing user ID... please wait.")
+        render_sidebar()
+        return
+
     st.session_state.query_history.append(active_prompt)
 
     st.session_state.messages.append({"role": "user", "content": active_prompt})
@@ -1075,6 +1327,8 @@ def main():
                 render_sidebar()
                 return
 
+        if not log_generated_query(payload, source=query_source):
+            st.caption("Query analytics will sync after the browser user ID is ready.")
         render_assistant_response(
             payload["result"],
             payload["prompt"],

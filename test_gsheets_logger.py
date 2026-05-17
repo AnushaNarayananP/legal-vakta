@@ -2,7 +2,9 @@ from src.utils.gsheets_logger import (
     FEEDBACK_HEADERS,
     QUERY_HEADERS,
     WAITLIST_HEADERS,
+    append_query_log,
     calculate_usage_stats,
+    log_query,
     save_waitlist_lead,
 )
 
@@ -11,15 +13,31 @@ class FakeWorksheet:
     def __init__(self, values=None):
         self.values = values or []
         self.appended_rows = []
+        self.value_input_options = []
+        self.updated_ranges = []
 
     def get_all_values(self):
         return self.values
 
-    def update(self, range_name=None, values=None):
-        self.values = values
+    def get_all_records(self):
+        if not self.values:
+            return []
+        headers = self.values[0]
+        return [dict(zip(headers, row)) for row in self.values[1:]]
 
-    def append_row(self, row):
+    def update(self, range_name=None, values=None):
+        self.updated_ranges.append((range_name, values))
+        if range_name in (None, "A1:F1", "A1:G1"):
+            self.values = values
+        elif range_name and range_name.startswith("A") and values:
+            row_number = int(range_name.split(":")[0][1:])
+            while len(self.values) < row_number:
+                self.values.append([])
+            self.values[row_number - 1] = values[0]
+
+    def append_row(self, row, value_input_option=None):
         self.appended_rows.append(row)
+        self.value_input_options.append(value_input_option)
 
 
 class FakeSpreadsheet:
@@ -69,7 +87,7 @@ def test_calculate_usage_stats_counts_users_and_feedback_percentages():
 
 
 def test_sheet_headers_match_tracking_contract():
-    assert QUERY_HEADERS == ["timestamp", "user_id", "name", "email", "role", "query"]
+    assert QUERY_HEADERS == ["timestamp", "user_id", "query", "role", "confidence", "source"]
     assert FEEDBACK_HEADERS == [
         "timestamp",
         "user_id",
@@ -81,30 +99,162 @@ def test_sheet_headers_match_tracking_contract():
     assert WAITLIST_HEADERS == ["timestamp", "user_id", "name", "email", "role", "source"]
 
 
+def test_append_query_log_writes_clean_query_analytics_row():
+    queries = FakeWorksheet(values=[QUERY_HEADERS])
+    spreadsheet = FakeSpreadsheet({"queries": queries})
+
+    append_query_log(
+        user_id="user-1",
+        query="benefit of doubt",
+        role="Law Student",
+        confidence="High",
+        source="chatbot_query",
+        spreadsheet=spreadsheet,
+    )
+
+    assert len(queries.appended_rows) == 1
+    assert len(queries.appended_rows[0]) == len(QUERY_HEADERS)
+    assert queries.appended_rows[0][1:] == [
+        "user-1",
+        "benefit of doubt",
+        "Law Student",
+        "High",
+        "chatbot_query",
+    ]
+    assert queries.value_input_options == ["USER_ENTERED"]
+
+
+def test_append_query_log_defaults_to_na_confidence_and_preserves_source():
+    queries = FakeWorksheet(values=[QUERY_HEADERS])
+    spreadsheet = FakeSpreadsheet({"queries": queries})
+
+    append_query_log(
+        user_id="user-1",
+        query="benefit of doubt",
+        role="Law Student",
+        confidence="Unexpected",
+        source="manual_override",
+        spreadsheet=spreadsheet,
+    )
+
+    assert queries.appended_rows[0][1:] == [
+        "user-1",
+        "benefit of doubt",
+        "Law Student",
+        "N/A",
+        "manual_override",
+    ]
+
+
+def test_backward_compatible_log_query_preserves_source():
+    queries = FakeWorksheet(values=[QUERY_HEADERS])
+    spreadsheet = FakeSpreadsheet({"queries": queries})
+
+    log_query(
+        user_id="user-1",
+        role="Law Student",
+        query="benefit of doubt",
+        source="suggested_query",
+        spreadsheet=spreadsheet,
+    )
+
+    assert queries.appended_rows[0][1:] == [
+        "user-1",
+        "benefit of doubt",
+        "Law Student",
+        "N/A",
+        "suggested_query",
+    ]
+
+
+def test_append_query_log_updates_legacy_query_headers_before_appending():
+    legacy_headers = ["timestamp", "user_id", "name", "email", "role", "query"]
+    queries = FakeWorksheet(values=[legacy_headers])
+    spreadsheet = FakeSpreadsheet({"queries": queries})
+
+    append_query_log(
+        user_id="user-2",
+        query="bail",
+        role="Lawyer",
+        confidence="Medium",
+        spreadsheet=spreadsheet,
+    )
+
+    assert queries.values == [QUERY_HEADERS]
+    assert queries.appended_rows[0][1:] == [
+        "user-2",
+        "bail",
+        "Lawyer",
+        "Medium",
+        "chatbot_query",
+    ]
+
+
 def test_save_waitlist_lead_appends_landing_source_to_existing_sheet():
     waitlist = FakeWorksheet(values=[WAITLIST_HEADERS])
     spreadsheet = FakeSpreadsheet({"waitlist": waitlist})
 
-    save_waitlist_lead("user-1", "Asha", "asha@example.com", "Law Student", spreadsheet)
+    result = save_waitlist_lead("user-1", "Asha", "asha@example.com", "Law Student", spreadsheet)
 
+    assert result == "created"
     assert len(waitlist.appended_rows) == 1
     assert waitlist.appended_rows[0][1:] == [
         "user-1",
         "Asha",
         "asha@example.com",
         "Law Student",
-        "landing_page",
+        "waitlist_form",
     ]
 
 
 def test_save_waitlist_lead_creates_missing_waitlist_sheet_when_allowed():
     spreadsheet = FakeSpreadsheet()
 
-    save_waitlist_lead("user-2", "", "lead@example.com", "Researcher", spreadsheet)
+    result = save_waitlist_lead("user-2", "", "lead@example.com", "Researcher", spreadsheet)
 
+    assert result == "created"
     waitlist = spreadsheet.worksheets["waitlist"]
     assert waitlist.values == [WAITLIST_HEADERS]
-    assert waitlist.appended_rows[0][5] == "landing_page"
+    assert waitlist.appended_rows[0][5] == "waitlist_form"
+
+
+def test_save_waitlist_lead_does_not_duplicate_existing_email_when_unchanged():
+    waitlist = FakeWorksheet(
+        values=[
+            WAITLIST_HEADERS,
+            ["old-time", "user-1", "Asha", "asha@example.com", "Law Student", "waitlist_form"],
+        ]
+    )
+    spreadsheet = FakeSpreadsheet({"waitlist": waitlist})
+
+    result = save_waitlist_lead("user-2", "Asha", "ASHA@example.com", "Law Student", spreadsheet)
+
+    assert result == "existing"
+    assert waitlist.appended_rows == []
+    assert waitlist.updated_ranges == []
+
+
+def test_save_waitlist_lead_updates_name_and_role_for_existing_email_without_duplicate():
+    waitlist = FakeWorksheet(
+        values=[
+            WAITLIST_HEADERS,
+            ["old-time", "user-1", "Asha", "asha@example.com", "Law Student", "waitlist_form"],
+        ]
+    )
+    spreadsheet = FakeSpreadsheet({"waitlist": waitlist})
+
+    result = save_waitlist_lead("user-2", "Asha N.", "asha@example.com", "Lawyer", spreadsheet)
+
+    assert result == "updated"
+    assert waitlist.appended_rows == []
+    assert waitlist.values[1] == [
+        "old-time",
+        "user-1",
+        "Asha N.",
+        "asha@example.com",
+        "Lawyer",
+        "waitlist_form",
+    ]
 
 
 def test_save_waitlist_lead_rejects_invalid_email():

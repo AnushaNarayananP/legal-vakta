@@ -14,7 +14,15 @@ from src.config import Settings
 @lru_cache(maxsize=2)
 def create_embeddings(model_name: str = Settings.embedding_model):
     """Create local sentence-transformer embeddings."""
-    return HuggingFaceEmbeddings(model_name=model_name)
+    try:
+        return HuggingFaceEmbeddings(model_name=model_name)
+    except ValueError as exc:
+        if "Unrecognized processing class" not in str(exc):
+            raise
+        return HuggingFaceEmbeddings(
+            model_name=model_name,
+            model_kwargs={"local_files_only": True},
+        )
 
 
 def create_vectorstore(

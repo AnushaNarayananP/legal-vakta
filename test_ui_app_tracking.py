@@ -5,10 +5,24 @@ import pandas as pd
 
 from src.ui.app import (
     build_impact_stats,
+    clear_session_user_id,
+    consume_pending_query_event,
+    embed_inline_html,
+    get_active_prompt_and_source,
+    get_confidence_label,
+    get_persistent_user_id,
+    get_prompt_source,
+    get_query_param_user_id,
     get_recent_unique_queries,
     get_user_facing_error_message,
     load_usage_stats,
+    log_generated_query,
     log_query,
+    queue_suggested_query,
+    QUERY_SOURCE_CHATBOT,
+    QUERY_SOURCE_MANUAL_TEST,
+    QUERY_SOURCE_MODE_REGENERATION,
+    QUERY_SOURCE_SUGGESTED,
     save_feedback,
 )
 
@@ -26,19 +40,283 @@ def test_log_query_appends_query_with_timestamp():
         name="Asha",
         role="Law Student",
         email="asha@example.com",
+        confidence="High",
         query_log_path=query_log_path,
     )
 
     df = pd.read_csv(query_log_path)
-    assert df.columns.tolist() == ["timestamp", "user_id", "name", "email", "role", "query"]
+    assert df.columns.tolist() == ["timestamp", "user_id", "query", "role", "confidence", "source"]
     assert df["user_id"].tolist() == ["user-1"]
-    assert df["name"].tolist() == ["Asha"]
     assert df["role"].tolist() == ["Law Student"]
-    assert df["email"].tolist() == ["asha@example.com"]
     assert df["query"].tolist() == ["benefit of doubt"]
+    assert df["confidence"].tolist() == ["High"]
+    assert df["source"].tolist() == ["chatbot_query"]
     assert isinstance(df.loc[0, "timestamp"], str)
 
     shutil.rmtree(test_root)
+
+
+def test_log_query_allows_manual_test_source():
+    test_root = Path("test_artifacts") / "ui_tracking"
+    if test_root.exists():
+        shutil.rmtree(test_root)
+
+    query_log_path = test_root / "query_logs.csv"
+
+    log_query(
+        "manual smoke query",
+        user_id="dev-user",
+        role="Researcher",
+        confidence="Low",
+        source=QUERY_SOURCE_MANUAL_TEST,
+        query_log_path=query_log_path,
+    )
+
+    df = pd.read_csv(query_log_path)
+    assert df["source"].tolist() == [QUERY_SOURCE_MANUAL_TEST]
+
+    shutil.rmtree(test_root)
+
+
+def test_get_prompt_source_distinguishes_typed_and_suggested_queries():
+    assert get_prompt_source("typed question", None) == QUERY_SOURCE_CHATBOT
+    assert get_prompt_source("", "Benefit of doubt in criminal appeals") == QUERY_SOURCE_SUGGESTED
+    assert get_prompt_source(None, "Benefit of doubt in criminal appeals") == QUERY_SOURCE_SUGGESTED
+    assert get_prompt_source("", None) == QUERY_SOURCE_CHATBOT
+
+
+def test_get_active_prompt_and_source_prefers_clicked_suggestion_when_both_inputs_exist():
+    prompt, source = get_active_prompt_and_source(
+        "stale typed prompt",
+        "Benefit of doubt in criminal appeals",
+    )
+
+    assert prompt == "Benefit of doubt in criminal appeals"
+    assert source == QUERY_SOURCE_SUGGESTED
+
+
+def test_pending_suggested_query_event_resolves_as_suggested_query():
+    state = {}
+
+    queue_suggested_query(state, "Benefit of doubt in criminal appeals")
+    prompt, source = consume_pending_query_event(state, typed_prompt="")
+
+    assert prompt == "Benefit of doubt in criminal appeals"
+    assert source == QUERY_SOURCE_SUGGESTED
+    assert "pending_query" not in state
+    assert "pending_query_source" not in state
+
+
+def test_pending_suggestion_takes_priority_over_typed_prompt():
+    state = {
+        "pending_query": "Benefit of doubt in criminal appeals",
+        "pending_query_source": QUERY_SOURCE_SUGGESTED,
+    }
+
+    prompt, source = consume_pending_query_event(state, typed_prompt="typed bail question")
+
+    assert prompt == "Benefit of doubt in criminal appeals"
+    assert source == QUERY_SOURCE_SUGGESTED
+    assert "pending_query" not in state
+    assert "pending_query_source" not in state
+
+
+def test_log_generated_query_records_mode_regeneration_source(monkeypatch):
+    calls = []
+
+    monkeypatch.setattr(
+        "src.ui.app.get_user_profile",
+        lambda: {"user_id": "user-1", "name": "Asha", "role": "Law Student", "email": "asha@example.com"},
+    )
+    monkeypatch.setattr("src.ui.app.log_query", lambda *args, **kwargs: calls.append((args, kwargs)) or True)
+
+    payload = {
+        "result": {"retrieved_docs": [object(), object(), object(), object()]},
+        "prompt": "Benefit of doubt",
+    }
+
+    assert log_generated_query(payload, source=QUERY_SOURCE_MODE_REGENERATION) is True
+    assert calls == [
+        (
+            ("Benefit of doubt",),
+            {
+                "user_id": "user-1",
+                "role": "Law Student",
+                "confidence": "High",
+                "source": QUERY_SOURCE_MODE_REGENERATION,
+            },
+        )
+    ]
+
+
+def test_get_persistent_user_id_prefers_local_storage_over_different_session_id():
+    state = {"user_id": "user_session-456"}
+
+    user_id = get_persistent_user_id(
+        state=state,
+        local_storage_id="user_browser-123",
+        generate_uuid=lambda: "new-789",
+    )
+
+    assert user_id == "user_browser-123"
+    assert state["user_id"] == "user_browser-123"
+    assert state["local_storage_user_id"] == "user_browser-123"
+
+
+def test_get_persistent_user_id_uses_local_storage_when_session_is_empty():
+    state = {}
+
+    user_id = get_persistent_user_id(
+        state=state,
+        local_storage_id="user_browser-123",
+        generate_uuid=lambda: "new-789",
+    )
+
+    assert user_id == "user_browser-123"
+    assert state["user_id"] == "user_browser-123"
+    assert state["local_storage_user_id"] == "user_browser-123"
+
+
+def test_get_persistent_user_id_returns_empty_when_local_storage_is_pending():
+    state = {"user_id": "user_session-456"}
+
+    user_id = get_persistent_user_id(
+        state=state,
+        local_storage_id=None,
+        generate_uuid=lambda: "new-789",
+    )
+
+    assert user_id == ""
+    assert state["user_id"] == "user_session-456"
+
+
+def test_get_persistent_user_id_does_not_create_session_fallback_when_browser_is_pending():
+    state = {}
+
+    user_id = get_persistent_user_id(
+        state=state,
+        local_storage_id=None,
+        generate_uuid=lambda: "new-789",
+    )
+
+    assert user_id == ""
+    assert "user_id" not in state
+    assert "local_storage_user_id" not in state
+
+
+def test_get_persistent_user_id_later_local_storage_overwrites_session_fallback():
+    state = {"user_id": "user_new-789"}
+
+    user_id = get_persistent_user_id(
+        state=state,
+        local_storage_id="user_browser-123",
+        generate_uuid=lambda: "unused",
+    )
+
+    assert user_id == "user_browser-123"
+    assert state["user_id"] == "user_browser-123"
+    assert state["local_storage_user_id"] == "user_browser-123"
+
+
+def test_get_persistent_user_id_uses_existing_confirmed_local_storage_session():
+    state = {"user_id": "user_browser-123", "local_storage_user_id": "user_browser-123"}
+
+    user_id = get_persistent_user_id(
+        state=state,
+        local_storage_id=None,
+        generate_uuid=lambda: "new-789",
+    )
+
+    assert user_id == "user_browser-123"
+
+
+def test_get_persistent_user_id_reads_browser_id_from_query_params():
+    state = {}
+
+    user_id = get_persistent_user_id(
+        state=state,
+        query_params={"spacel_user_id": "user_browser-456"},
+        generate_uuid=lambda: "new-789",
+    )
+
+    assert user_id == "user_browser-456"
+    assert state["user_id"] == "user_browser-456"
+    assert state["local_storage_user_id"] == "user_browser-456"
+
+
+def test_get_query_param_user_id_handles_streamlit_list_values():
+    assert get_query_param_user_id({"spacel_user_id": ["user_browser-789"]}) == "user_browser-789"
+
+
+def test_embed_inline_html_uses_javascript_enabled_st_html_when_available(monkeypatch):
+    calls = []
+
+    def fake_st_html(body, *, width="stretch", unsafe_allow_javascript=False):
+        calls.append((body, width, unsafe_allow_javascript))
+
+    monkeypatch.setattr("src.ui.app.st.html", fake_st_html, raising=False)
+
+    embed_inline_html("<script>window.test = true;</script>", height=0)
+
+    assert calls == [("<script>window.test = true;</script>", "stretch", True)]
+
+
+def test_embed_inline_html_falls_back_to_components_html_without_javascript_option(monkeypatch):
+    calls = []
+
+    def fake_st_html(body, *, width="stretch"):
+        calls.append(("st.html", body, width))
+
+    def fake_components_html(body, **kwargs):
+        calls.append(("components.html", body, kwargs))
+
+    monkeypatch.setattr("src.ui.app.st.html", fake_st_html, raising=False)
+    monkeypatch.setattr("src.ui.app.components.html", fake_components_html)
+
+    embed_inline_html("<script>window.test = true;</script>", height=0)
+
+    assert calls == [("components.html", "<script>window.test = true;</script>", {"height": 0})]
+
+
+def test_get_persistent_user_id_ignores_name_email_role_changes():
+    state = {
+        "user_id": "user_browser-123",
+        "user_name": "Old",
+        "email": "old@example.com",
+        "user_role": "Law Student",
+    }
+
+    state["user_name"] = "New"
+    state["email"] = "new@example.com"
+    state["user_role"] = "Lawyer"
+
+    user_id = get_persistent_user_id(
+        state=state,
+        local_storage_id="user_browser-123",
+        generate_uuid=lambda: "new-789",
+    )
+
+    assert user_id == "user_browser-123"
+
+
+def test_clear_session_user_id_removes_identity_keys():
+    state = {
+        "user_id": "user-1",
+        "local_storage_user_id": "user-1",
+        "_last_browser_user_id": "old",
+        "user_id_source": "browser",
+        "other": "kept",
+    }
+
+    clear_session_user_id(state)
+
+    assert state == {"other": "kept"}
+
+
+def test_get_confidence_label_uses_allowed_sheet_values():
+    assert get_confidence_label([object(), object(), object(), object()]) == "High"
+    assert get_confidence_label([object(), object()]) == "Medium"
+    assert get_confidence_label([]) == "Low"
 
 
 def test_save_feedback_appends_feedback_with_timestamp():
@@ -128,7 +406,7 @@ def test_load_usage_stats_handles_missing_files_and_counts_rows():
     log_query("query one", "user-1", "Asha", "Law Student", "asha@example.com", query_log_path=query_log_path)
     log_query("query two", "user-2", "", "Researcher", "", query_log_path=query_log_path)
     query_df = pd.read_csv(query_log_path, keep_default_na=False)
-    assert query_df["email"].tolist() == ["asha@example.com", "N/A"]
+    assert query_df["source"].tolist() == ["chatbot_query", "chatbot_query"]
     save_feedback("query one", "useful", "user-1", "Asha", "Law Student", feedback_path=feedback_path)
     save_feedback("query two", "not_useful", "user-2", "", "Researcher", feedback_path=feedback_path)
 

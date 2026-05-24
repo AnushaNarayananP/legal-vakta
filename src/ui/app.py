@@ -1,6 +1,7 @@
 """Streamlit UI for SpaceL AI."""
 
 import csv
+import hashlib
 import inspect
 import sys
 import time
@@ -228,6 +229,48 @@ def append_csv_row(path, fieldnames, row):
 def current_timestamp():
     """Return an ISO timestamp for usage analytics."""
     return datetime.now().isoformat(timespec="seconds")
+
+
+def get_feedback_key(user_id, query, answer_mode):
+    """Build a stable key for one user's feedback on one query/mode answer."""
+    clean_user_id = normalize_user_id(user_id) or "anonymous"
+    query_hash = hashlib.sha256(str(query or "").strip().encode("utf-8")).hexdigest()[:16]
+    clean_mode = str(answer_mode or "Legal").strip() or "Legal"
+    return f"{clean_user_id}_{query_hash}_{clean_mode}"
+
+
+def get_feedback_state(state, feedback_key):
+    """Return initialized feedback state for a stable feedback key."""
+    states = state.setdefault("feedback_states", {})
+    current = states.setdefault(
+        feedback_key,
+        {
+            "rating": None,
+            "text": "",
+            "submitted": False,
+        },
+    )
+    current.setdefault("rating", None)
+    current.setdefault("text", "")
+    current.setdefault("submitted", False)
+    return current
+
+
+def update_feedback_state(state, feedback_key, rating=None, text=None, submitted=None):
+    """Update one scoped feedback state without touching other modes or queries."""
+    current = get_feedback_state(state, feedback_key)
+    if rating is not None:
+        current["rating"] = rating
+    if text is not None:
+        current["text"] = text
+    if submitted is not None:
+        current["submitted"] = submitted
+    return current
+
+
+def mark_feedback_submitted(state, feedback_key):
+    """Mark one query/mode feedback state as submitted."""
+    return update_feedback_state(state, feedback_key, submitted=True)
 
 
 def normalize_user_id(value):
@@ -465,6 +508,7 @@ def log_query(
     name="",
     role="",
     email="",
+    answer_mode="Legal",
     confidence="N/A",
     source=QUERY_SOURCE_CHATBOT,
     query_log_path=None,
@@ -473,12 +517,13 @@ def log_query(
     if query_log_path is not None:
         append_csv_row(
             query_log_path,
-            fieldnames=["timestamp", "user_id", "query", "role", "confidence", "source"],
+            fieldnames=["timestamp", "user_id", "query", "role", "answer_mode", "confidence", "source"],
             row={
                 "timestamp": current_timestamp(),
                 "user_id": user_id,
                 "query": query,
                 "role": role,
+                "answer_mode": answer_mode,
                 "confidence": confidence,
                 "source": source,
             },
@@ -492,6 +537,7 @@ def log_query(
             user_id=user_id,
             query=query,
             role=role,
+            answer_mode=answer_mode,
             confidence=confidence,
             source=source,
         )
@@ -544,10 +590,12 @@ def log_generated_query(payload, source=QUERY_SOURCE_CHATBOT):
         return False
 
     result = payload.get("result", {})
+    answer_mode = payload.get("mode") or result.get("mode") or get_answer_mode()
     return log_query(
         payload.get("prompt", ""),
         user_id=profile["user_id"],
         role=profile["role"],
+        answer_mode=answer_mode,
         confidence=get_confidence_label(result.get("retrieved_docs", [])),
         source=source,
     )
@@ -560,40 +608,53 @@ def save_feedback(
     name="",
     role="",
     email=None,
+    written_feedback="",
+    source="chatbot_feedback",
     feedback_path=None,
     **_ignored_profile_fields,
 ):
     """Persist answer feedback to Google Sheets, or CSV when a path is supplied."""
+    feedback_headers = [
+        "timestamp",
+        "user_id",
+        "name",
+        "role",
+        "query",
+        "rating",
+        "written_feedback",
+        "source",
+    ]
     if feedback_path is not None:
         append_csv_row(
             feedback_path,
-            fieldnames=["timestamp", "user_id", "name", "role", "query", "feedback"],
+            fieldnames=feedback_headers,
             row={
                 "timestamp": current_timestamp(),
                 "user_id": user_id,
                 "name": name,
                 "role": role,
                 "query": query,
-                "feedback": feedback,
+                "rating": feedback,
+                "written_feedback": written_feedback,
+                "source": source,
             },
         )
         return True
 
     try:
-        _, _, feedback_sheet = connect_google_sheets()
-        feedback_sheet.append_row(
-            [
-                current_timestamp(),
-                user_id,
-                name,
-                role,
-                query,
-                feedback,
-            ]
+        from src.utils.gsheets_logger import save_feedback as save_feedback_to_sheets
+
+        save_feedback_to_sheets(
+            user_id=user_id,
+            name=name or "",
+            role=role,
+            query=query,
+            rating=feedback,
+            written_feedback=written_feedback,
+            source=source,
         )
         return True
     except Exception:
-        st.warning("Feedback could not be saved right now. Please try again in a moment.")
         return False
 
 
@@ -643,14 +704,21 @@ def read_csv_safely(path):
 
 def calculate_feedback_percent(feedback_df, feedback_value):
     """Calculate percentage for one feedback value."""
-    if feedback_df.empty or "feedback" not in feedback_df.columns:
+    if feedback_df.empty:
+        return 0.0
+
+    if "rating" in feedback_df.columns:
+        feedback_column = "rating"
+    elif "feedback" in feedback_df.columns:
+        feedback_column = "feedback"
+    else:
         return 0.0
 
     total_feedback = len(feedback_df)
     if total_feedback == 0:
         return 0.0
 
-    feedback_count = (feedback_df["feedback"] == feedback_value).sum()
+    feedback_count = (feedback_df[feedback_column] == feedback_value).sum()
     return round((feedback_count / total_feedback) * 100, 1)
 
 
@@ -783,22 +851,36 @@ def render_answer_card(title, content):
         st.markdown(content)
 
 
-def render_answer_sections(answer, mode="Legal"):
+def is_source_evidence_title(title):
+    """Return True for answer sections that contain source evidence."""
+    return title in {"Source Evidence", "Simplified Source Evidence"}
+
+
+def render_answer_sections(answer, mode="Legal", source_filter="all"):
     """Render model output as separated legal research sections."""
     is_student_mode = mode == "Student"
     section_titles = STUDENT_SECTION_TITLES if is_student_mode else SECTION_TITLES
     sections = parse_structured_answer(answer, titles=section_titles)
+    rendered_any = False
 
     for title in section_titles:
         content = sections.get(title, "").strip()
         if not content:
             continue
-        if title in {"Source Evidence", "Simplified Source Evidence"}:
+        is_source_section = is_source_evidence_title(title)
+        if source_filter == "exclude" and is_source_section:
+            continue
+        if source_filter == "only" and not is_source_section:
+            continue
+        if is_source_section:
             content = sort_source_evidence(content)
 
         render_answer_card(title, content)
-        if title != section_titles[-1]:
+        rendered_any = True
+        if title != section_titles[-1] and source_filter == "all":
             st.divider()
+
+    return rendered_any
 
 
 def render_confidence_indicator(docs):
@@ -862,42 +944,77 @@ def render_copy_answer(answer):
         st.code(answer, language="markdown")
 
 
-def render_feedback_controls(prompt, response_id):
-    """Render useful/not useful feedback buttons."""
-    submitted_key = f"feedback_submitted_{response_id}"
-    if st.session_state.get(submitted_key):
-        st.caption("Feedback recorded. Thank you.")
+def render_feedback_controls(prompt, response_id, answer_mode="Legal"):
+    """Render rating and written feedback controls."""
+    user_id_ready = is_user_id_ready()
+    profile = get_user_profile() if user_id_ready else {"user_id": "", "name": "", "role": ""}
+    feedback_key = get_feedback_key(profile["user_id"], prompt, answer_mode)
+    feedback_state = get_feedback_state(st.session_state, feedback_key)
+    text_key = f"feedback_text_{feedback_key}"
+
+    st.markdown("### Was this answer helpful?")
+    if feedback_state["submitted"]:
+        st.success("✅ Thank you! Your feedback has been submitted.")
         return
 
-    user_id_ready = is_user_id_ready()
-    st.markdown("### Feedback")
     useful_col, not_useful_col = st.columns(2)
 
     with useful_col:
-        if st.button("Useful", key=f"useful_{response_id}", use_container_width=True, disabled=not user_id_ready):
-            profile = get_user_profile()
-            if save_feedback(
-                prompt,
-                "useful",
-                user_id=profile["user_id"],
-                name=profile["name"],
-                role=profile["role"],
-            ):
-                st.session_state[submitted_key] = True
-                st.success("Feedback saved to Google Sheets: useful")
+        if st.button(
+            "👍 Helpful",
+            key=f"helpful_btn_{feedback_key}",
+            use_container_width=True,
+            disabled=not user_id_ready,
+        ):
+            feedback_state = update_feedback_state(st.session_state, feedback_key, rating="helpful")
 
     with not_useful_col:
-        if st.button("Not Useful", key=f"not_useful_{response_id}", use_container_width=True, disabled=not user_id_ready):
-            profile = get_user_profile()
-            if save_feedback(
-                prompt,
-                "not_useful",
-                user_id=profile["user_id"],
-                name=profile["name"],
-                role=profile["role"],
-            ):
-                st.session_state[submitted_key] = True
-                st.warning("Feedback saved to Google Sheets: not useful")
+        if st.button(
+            "👎 Not Helpful",
+            key=f"not_helpful_btn_{feedback_key}",
+            use_container_width=True,
+            disabled=not user_id_ready,
+        ):
+            feedback_state = update_feedback_state(st.session_state, feedback_key, rating="not_helpful")
+
+    selected_rating = feedback_state.get("rating")
+    if selected_rating == "helpful":
+        st.caption("Selected: Helpful")
+    elif selected_rating == "not_helpful":
+        st.caption("Selected: Not Helpful")
+
+    if text_key not in st.session_state:
+        st.session_state[text_key] = feedback_state.get("text", "")
+
+    written_feedback = st.text_area(
+        "Help me improve: What worked? What was confusing? Would you come back?",
+        key=text_key,
+        placeholder="Type your feedback here…",
+    )
+    update_feedback_state(st.session_state, feedback_key, text=written_feedback)
+
+    submitted = st.button(
+        "Submit Feedback",
+        key=f"submit_feedback_{feedback_key}",
+        use_container_width=True,
+        disabled=not user_id_ready or not selected_rating or feedback_state["submitted"],
+    )
+
+    if submitted:
+        rating_for_sheet = "useful" if selected_rating == "helpful" else "not_useful"
+        if save_feedback(
+            prompt,
+            rating_for_sheet,
+            user_id=profile["user_id"],
+            name=profile["name"],
+            role=profile["role"],
+            written_feedback=written_feedback,
+        ):
+            mark_feedback_submitted(st.session_state, feedback_key)
+            st.success("✅ Thank you! Your feedback has been submitted.")
+            st.rerun()
+        else:
+            st.caption("Feedback could not be saved. Please try again.")
 
     if not user_id_ready:
         st.caption("Preparing user ID... please wait.")
@@ -905,11 +1022,14 @@ def render_feedback_controls(prompt, response_id):
 
 def render_assistant_response(result, prompt, elapsed, response_id):
     """Render the complete professional response view."""
+    answer_mode = result.get("mode", "Legal")
     render_confidence_indicator(result["retrieved_docs"])
-    render_answer_sections(result["answer"], mode=result.get("mode", "Legal"))
+    render_answer_sections(result["answer"], mode=answer_mode, source_filter="exclude")
+    render_feedback_controls(prompt, response_id, answer_mode=answer_mode)
+    if render_answer_sections(result["answer"], mode=answer_mode, source_filter="only"):
+        st.divider()
     render_retrieved_documents(result["retrieved_docs"])
     render_copy_answer(result["answer"])
-    render_feedback_controls(prompt, response_id)
     st.success(f"Response generated in {elapsed:.2f}s")
 
 
@@ -938,6 +1058,7 @@ def generate_response_payload(graph, prompt, mode):
     return {
         "result": result,
         "prompt": prompt,
+        "mode": mode,
         "elapsed": time.time() - start_time,
         "response_id": str(time.time_ns()),
     }
@@ -1233,8 +1354,18 @@ def render_sidebar():
             st.session_state.last_mode = get_answer_mode()
             st.session_state.last_response = None
             for key in list(st.session_state.keys()):
-                if str(key).startswith("feedback_submitted_"):
+                if str(key).startswith(
+                    (
+                        "feedback_submitted_",
+                        "feedback_rating_",
+                        "feedback_text_",
+                        "helpful_btn_",
+                        "not_helpful_btn_",
+                        "submit_feedback_",
+                    )
+                ):
                     del st.session_state[key]
+            st.session_state.feedback_states = {}
             st.rerun()
 
 

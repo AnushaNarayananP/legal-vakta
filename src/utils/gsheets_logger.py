@@ -9,9 +9,20 @@ SHEET_NAME = "Legal_Vakta_Logs"
 QUERIES_WORKSHEET = "queries"
 FEEDBACK_WORKSHEET = "feedback"
 WAITLIST_WORKSHEET = "waitlist"
-QUERY_HEADERS = ["timestamp", "user_id", "query", "role", "confidence", "source"]
+QUERY_HEADERS = ["timestamp", "user_id", "query", "role", "answer_mode", "confidence", "source"]
+LEGACY_CLEAN_QUERY_HEADERS = ["timestamp", "user_id", "query", "role", "confidence", "source"]
 LEGACY_QUERY_HEADERS = ["timestamp", "user_id", "name", "email", "role", "query"]
-FEEDBACK_HEADERS = ["timestamp", "user_id", "name", "role", "query", "feedback"]
+LEGACY_FEEDBACK_HEADERS = ["timestamp", "user_id", "name", "role", "query", "feedback"]
+FEEDBACK_HEADERS = [
+    "timestamp",
+    "user_id",
+    "name",
+    "role",
+    "query",
+    "rating",
+    "written_feedback",
+    "source",
+]
 WAITLIST_HEADERS = ["timestamp", "user_id", "name", "email", "role", "source"]
 MISSING_WORKSHEETS_MESSAGE = "Please create worksheets named queries and feedback manually."
 SCOPES = [
@@ -130,7 +141,15 @@ def ensure_worksheet(spreadsheet, title: str, headers: List[str], create_missing
     # The queries sheet used to contain profile columns. Update only the header row
     # so future appended query analytics use the clean MVP schema and column count.
     if title == QUERIES_WORKSHEET and existing_values[0][: len(LEGACY_QUERY_HEADERS)] == LEGACY_QUERY_HEADERS:
-        worksheet.update(range_name="A1:F1", values=[headers])
+        worksheet.update(range_name="A1:G1", values=[headers])
+        return worksheet
+
+    if title == QUERIES_WORKSHEET and existing_values[0][: len(LEGACY_CLEAN_QUERY_HEADERS)] == LEGACY_CLEAN_QUERY_HEADERS:
+        worksheet.update(range_name="A1:G1", values=[headers])
+        return worksheet
+
+    if title == FEEDBACK_WORKSHEET and existing_values[0][: len(LEGACY_FEEDBACK_HEADERS)] == LEGACY_FEEDBACK_HEADERS:
+        worksheet.update(range_name="A1:H1", values=[headers])
         return worksheet
 
     if existing_values[0][: len(headers)] != headers:
@@ -203,13 +222,19 @@ def normalize_query_confidence(confidence: str) -> str:
     return "N/A"
 
 
-def build_query_log_row(user_id: str, query: str, role: str, confidence: str, source: str):
-    """Build a query row in the exact queries sheet column order A-F."""
+def normalize_answer_mode(answer_mode: str) -> str:
+    """Keep query analytics answer mode values within the app modes."""
+    return "Student" if str(answer_mode).strip().lower() == "student" else "Legal"
+
+
+def build_query_log_row(user_id: str, query: str, role: str, answer_mode: str, confidence: str, source: str):
+    """Build a query row in the exact queries sheet column order A-G."""
     return [
         current_timestamp(),
         user_id,
         query,
         role,
+        normalize_answer_mode(answer_mode),
         normalize_query_confidence(confidence),
         source,
     ]
@@ -219,6 +244,7 @@ def append_query_log(
     user_id: str,
     query: str,
     role: str,
+    answer_mode: str = "Legal",
     confidence: str = "N/A",
     source: str = "chatbot_query",
     spreadsheet=None,
@@ -233,6 +259,7 @@ def append_query_log(
         user_id=user_id,
         query=query,
         role=role,
+        answer_mode=answer_mode,
         confidence=confidence,
         source=source,
     )
@@ -245,6 +272,7 @@ def log_query(
     email: str = "",
     role: str = "",
     query: str = "",
+    answer_mode: str = "Legal",
     source: str = "chatbot_query",
     spreadsheet=None,
 ):
@@ -253,6 +281,7 @@ def log_query(
         user_id=user_id,
         query=query,
         role=role,
+        answer_mode=answer_mode,
         confidence="N/A",
         source=source,
         spreadsheet=spreadsheet,
@@ -264,7 +293,9 @@ def save_feedback(
     name: str,
     role: str,
     query: str,
-    feedback: str,
+    rating: str,
+    written_feedback: str = "",
+    source: str = "chatbot_feedback",
     spreadsheet=None,
 ):
     """Log one feedback event to the feedback worksheet."""
@@ -277,7 +308,9 @@ def save_feedback(
             "name": name,
             "role": role,
             "query": query,
-            "feedback": feedback,
+            "rating": rating,
+            "written_feedback": written_feedback,
+            "source": source,
         },
         spreadsheet=spreadsheet,
     )
@@ -344,13 +377,19 @@ def calculate_usage_stats(query_records: List[Dict], feedback_records: List[Dict
 
     useful_percent = 0.0
     not_useful_percent = 0.0
-    if total_feedback and "feedback" in feedback_df.columns:
+    rating_column = ""
+    if "rating" in feedback_df.columns:
+        rating_column = "rating"
+    elif "feedback" in feedback_df.columns:
+        rating_column = "feedback"
+
+    if total_feedback and rating_column:
         useful_percent = round(
-            ((feedback_df["feedback"] == "useful").sum() / total_feedback) * 100,
+            ((feedback_df[rating_column] == "useful").sum() / total_feedback) * 100,
             1,
         )
         not_useful_percent = round(
-            ((feedback_df["feedback"] == "not_useful").sum() / total_feedback) * 100,
+            ((feedback_df[rating_column] == "not_useful").sum() / total_feedback) * 100,
             1,
         )
 

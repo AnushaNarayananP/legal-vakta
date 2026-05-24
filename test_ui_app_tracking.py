@@ -8,6 +8,8 @@ from src.ui.app import (
     clear_session_user_id,
     consume_pending_query_event,
     embed_inline_html,
+    get_feedback_key,
+    get_feedback_state,
     get_active_prompt_and_source,
     get_confidence_label,
     get_persistent_user_id,
@@ -18,12 +20,14 @@ from src.ui.app import (
     load_usage_stats,
     log_generated_query,
     log_query,
+    mark_feedback_submitted,
     queue_suggested_query,
     QUERY_SOURCE_CHATBOT,
     QUERY_SOURCE_MANUAL_TEST,
     QUERY_SOURCE_MODE_REGENERATION,
     QUERY_SOURCE_SUGGESTED,
     save_feedback,
+    update_feedback_state,
 )
 
 
@@ -40,14 +44,24 @@ def test_log_query_appends_query_with_timestamp():
         name="Asha",
         role="Law Student",
         email="asha@example.com",
+        answer_mode="Legal",
         confidence="High",
         query_log_path=query_log_path,
     )
 
     df = pd.read_csv(query_log_path)
-    assert df.columns.tolist() == ["timestamp", "user_id", "query", "role", "confidence", "source"]
+    assert df.columns.tolist() == [
+        "timestamp",
+        "user_id",
+        "query",
+        "role",
+        "answer_mode",
+        "confidence",
+        "source",
+    ]
     assert df["user_id"].tolist() == ["user-1"]
     assert df["role"].tolist() == ["Law Student"]
+    assert df["answer_mode"].tolist() == ["Legal"]
     assert df["query"].tolist() == ["benefit of doubt"]
     assert df["confidence"].tolist() == ["High"]
     assert df["source"].tolist() == ["chatbot_query"]
@@ -67,12 +81,14 @@ def test_log_query_allows_manual_test_source():
         "manual smoke query",
         user_id="dev-user",
         role="Researcher",
+        answer_mode="Student",
         confidence="Low",
         source=QUERY_SOURCE_MANUAL_TEST,
         query_log_path=query_log_path,
     )
 
     df = pd.read_csv(query_log_path)
+    assert df["answer_mode"].tolist() == ["Student"]
     assert df["source"].tolist() == [QUERY_SOURCE_MANUAL_TEST]
 
     shutil.rmtree(test_root)
@@ -133,6 +149,7 @@ def test_log_generated_query_records_mode_regeneration_source(monkeypatch):
     payload = {
         "result": {"retrieved_docs": [object(), object(), object(), object()]},
         "prompt": "Benefit of doubt",
+        "mode": "Student",
     }
 
     assert log_generated_query(payload, source=QUERY_SOURCE_MODE_REGENERATION) is True
@@ -142,6 +159,7 @@ def test_log_generated_query_records_mode_regeneration_source(monkeypatch):
             {
                 "user_id": "user-1",
                 "role": "Law Student",
+                "answer_mode": "Student",
                 "confidence": "High",
                 "source": QUERY_SOURCE_MODE_REGENERATION,
             },
@@ -313,6 +331,45 @@ def test_clear_session_user_id_removes_identity_keys():
     assert state == {"other": "kept"}
 
 
+def test_feedback_key_is_scoped_by_user_query_and_mode():
+    legal_key = get_feedback_key("user-1", "Benefit of doubt", "Legal")
+    student_key = get_feedback_key("user-1", "Benefit of doubt", "Student")
+    different_query_key = get_feedback_key("user-1", "Bail", "Legal")
+    different_user_key = get_feedback_key("user-2", "Benefit of doubt", "Legal")
+
+    assert legal_key != student_key
+    assert legal_key != different_query_key
+    assert legal_key != different_user_key
+    assert legal_key.startswith("user-1_")
+    assert legal_key.endswith("_Legal")
+
+
+def test_feedback_state_defaults_and_updates_are_isolated_by_key():
+    state = {}
+    legal_key = get_feedback_key("user-1", "Benefit of doubt", "Legal")
+    student_key = get_feedback_key("user-1", "Benefit of doubt", "Student")
+
+    assert get_feedback_state(state, legal_key) == {
+        "rating": None,
+        "text": "",
+        "submitted": False,
+    }
+
+    update_feedback_state(state, legal_key, rating="helpful", text="Clear")
+    mark_feedback_submitted(state, legal_key)
+
+    assert get_feedback_state(state, legal_key) == {
+        "rating": "helpful",
+        "text": "Clear",
+        "submitted": True,
+    }
+    assert get_feedback_state(state, student_key) == {
+        "rating": None,
+        "text": "",
+        "submitted": False,
+    }
+
+
 def test_get_confidence_label_uses_allowed_sheet_values():
     assert get_confidence_label([object(), object(), object(), object()]) == "High"
     assert get_confidence_label([object(), object()]) == "Medium"
@@ -342,13 +399,17 @@ def test_save_feedback_appends_feedback_with_timestamp():
         "name",
         "role",
         "query",
-        "feedback",
+        "rating",
+        "written_feedback",
+        "source",
     ]
     assert df["user_id"].tolist() == ["user-2"]
     assert df["name"].tolist() == ["Rao"]
     assert df["role"].tolist() == ["Lawyer"]
     assert df["query"].tolist() == ["bail conditions"]
-    assert df["feedback"].tolist() == ["useful"]
+    assert df["rating"].tolist() == ["useful"]
+    assert df["written_feedback"].fillna("").tolist() == [""]
+    assert df["source"].tolist() == ["chatbot_feedback"]
     assert isinstance(df.loc[0, "timestamp"], str)
 
     shutil.rmtree(test_root)
@@ -378,11 +439,38 @@ def test_save_feedback_ignores_email_profile_field():
         "name",
         "role",
         "query",
-        "feedback",
+        "rating",
+        "written_feedback",
+        "source",
     ]
     assert df["user_id"].tolist() == ["user-3"]
     assert df["role"].tolist() == ["Researcher"]
-    assert df["feedback"].tolist() == ["not_useful"]
+    assert df["rating"].tolist() == ["not_useful"]
+
+    shutil.rmtree(test_root)
+
+
+def test_save_feedback_appends_written_feedback_to_csv():
+    test_root = Path("test_artifacts") / "ui_tracking"
+    if test_root.exists():
+        shutil.rmtree(test_root)
+
+    feedback_path = test_root / "feedback.csv"
+
+    save_feedback(
+        "benefit of doubt",
+        "useful",
+        user_id="user-4",
+        name="Asha",
+        role="Law Student",
+        written_feedback="The takeaway helped, sources were clear.",
+        feedback_path=feedback_path,
+    )
+
+    df = pd.read_csv(feedback_path)
+    assert df["rating"].tolist() == ["useful"]
+    assert df["written_feedback"].tolist() == ["The takeaway helped, sources were clear."]
+    assert df["source"].tolist() == ["chatbot_feedback"]
 
     shutil.rmtree(test_root)
 
@@ -403,9 +491,11 @@ def test_load_usage_stats_handles_missing_files_and_counts_rows():
         "not_useful_feedback_percent": 0.0,
     }
 
-    log_query("query one", "user-1", "Asha", "Law Student", "asha@example.com", query_log_path=query_log_path)
-    log_query("query two", "user-2", "", "Researcher", "", query_log_path=query_log_path)
+    log_query("query one", "user-1", "Asha", "Law Student", "asha@example.com", "Legal", query_log_path=query_log_path)
+    log_query("query two", "user-2", "", "Researcher", "", "Student", query_log_path=query_log_path)
     query_df = pd.read_csv(query_log_path, keep_default_na=False)
+    assert query_df["role"].tolist() == ["Law Student", "Researcher"]
+    assert query_df["answer_mode"].tolist() == ["Legal", "Student"]
     assert query_df["source"].tolist() == ["chatbot_query", "chatbot_query"]
     save_feedback("query one", "useful", "user-1", "Asha", "Law Student", feedback_path=feedback_path)
     save_feedback("query two", "not_useful", "user-2", "", "Researcher", feedback_path=feedback_path)

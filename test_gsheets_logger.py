@@ -5,6 +5,7 @@ from src.utils.gsheets_logger import (
     append_query_log,
     calculate_usage_stats,
     log_query,
+    save_feedback,
     save_waitlist_lead,
 )
 
@@ -27,7 +28,7 @@ class FakeWorksheet:
 
     def update(self, range_name=None, values=None):
         self.updated_ranges.append((range_name, values))
-        if range_name in (None, "A1:F1", "A1:G1"):
+        if range_name in (None, "A1:F1", "A1:G1", "A1:H1"):
             self.values = values
         elif range_name and range_name.startswith("A") and values:
             row_number = int(range_name.split(":")[0][1:])
@@ -86,17 +87,97 @@ def test_calculate_usage_stats_counts_users_and_feedback_percentages():
     }
 
 
+def test_calculate_usage_stats_uses_rating_column_when_available():
+    query_records = [{"user_id": "u1", "query": "q1"}]
+    feedback_records = [
+        {"user_id": "u1", "rating": "useful", "written_feedback": "Good"},
+        {"user_id": "u2", "rating": "not_useful", "written_feedback": "Confusing"},
+    ]
+
+    assert calculate_usage_stats(query_records, feedback_records) == {
+        "total_queries": 1,
+        "unique_users": 1,
+        "total_feedback": 2,
+        "useful_feedback_percent": 50.0,
+        "not_useful_feedback_percent": 50.0,
+    }
+
+
 def test_sheet_headers_match_tracking_contract():
-    assert QUERY_HEADERS == ["timestamp", "user_id", "query", "role", "confidence", "source"]
+    assert QUERY_HEADERS == [
+        "timestamp",
+        "user_id",
+        "query",
+        "role",
+        "answer_mode",
+        "confidence",
+        "source",
+    ]
     assert FEEDBACK_HEADERS == [
         "timestamp",
         "user_id",
         "name",
         "role",
         "query",
-        "feedback",
+        "rating",
+        "written_feedback",
+        "source",
     ]
     assert WAITLIST_HEADERS == ["timestamp", "user_id", "name", "email", "role", "source"]
+
+
+def test_save_feedback_appends_rating_written_feedback_and_source():
+    feedback = FakeWorksheet(values=[FEEDBACK_HEADERS])
+    spreadsheet = FakeSpreadsheet({"feedback": feedback})
+
+    save_feedback(
+        user_id="user-1",
+        name="Asha",
+        role="Law Student",
+        query="bail",
+        rating="useful",
+        written_feedback="Clear answer",
+        spreadsheet=spreadsheet,
+    )
+
+    assert len(feedback.appended_rows) == 1
+    assert len(feedback.appended_rows[0]) == len(FEEDBACK_HEADERS)
+    assert feedback.appended_rows[0][1:] == [
+        "user-1",
+        "Asha",
+        "Law Student",
+        "bail",
+        "useful",
+        "Clear answer",
+        "chatbot_feedback",
+    ]
+
+
+def test_save_feedback_updates_legacy_feedback_headers_before_appending():
+    legacy_headers = ["timestamp", "user_id", "name", "role", "query", "feedback"]
+    feedback = FakeWorksheet(values=[legacy_headers])
+    spreadsheet = FakeSpreadsheet({"feedback": feedback})
+
+    save_feedback(
+        user_id="user-2",
+        name="",
+        role="Researcher",
+        query="evidence",
+        rating="not_useful",
+        written_feedback="Needed more sources",
+        spreadsheet=spreadsheet,
+    )
+
+    assert feedback.values == [FEEDBACK_HEADERS]
+    assert feedback.appended_rows[0][1:] == [
+        "user-2",
+        "",
+        "Researcher",
+        "evidence",
+        "not_useful",
+        "Needed more sources",
+        "chatbot_feedback",
+    ]
 
 
 def test_append_query_log_writes_clean_query_analytics_row():
@@ -107,6 +188,7 @@ def test_append_query_log_writes_clean_query_analytics_row():
         user_id="user-1",
         query="benefit of doubt",
         role="Law Student",
+        answer_mode="Legal",
         confidence="High",
         source="chatbot_query",
         spreadsheet=spreadsheet,
@@ -118,6 +200,7 @@ def test_append_query_log_writes_clean_query_analytics_row():
         "user-1",
         "benefit of doubt",
         "Law Student",
+        "Legal",
         "High",
         "chatbot_query",
     ]
@@ -132,6 +215,7 @@ def test_append_query_log_defaults_to_na_confidence_and_preserves_source():
         user_id="user-1",
         query="benefit of doubt",
         role="Law Student",
+        answer_mode="Student",
         confidence="Unexpected",
         source="manual_override",
         spreadsheet=spreadsheet,
@@ -141,6 +225,7 @@ def test_append_query_log_defaults_to_na_confidence_and_preserves_source():
         "user-1",
         "benefit of doubt",
         "Law Student",
+        "Student",
         "N/A",
         "manual_override",
     ]
@@ -154,6 +239,7 @@ def test_backward_compatible_log_query_preserves_source():
         user_id="user-1",
         role="Law Student",
         query="benefit of doubt",
+        answer_mode="Student",
         source="suggested_query",
         spreadsheet=spreadsheet,
     )
@@ -162,6 +248,7 @@ def test_backward_compatible_log_query_preserves_source():
         "user-1",
         "benefit of doubt",
         "Law Student",
+        "Student",
         "N/A",
         "suggested_query",
     ]
@@ -176,6 +263,7 @@ def test_append_query_log_updates_legacy_query_headers_before_appending():
         user_id="user-2",
         query="bail",
         role="Lawyer",
+        answer_mode="Legal",
         confidence="Medium",
         spreadsheet=spreadsheet,
     )
@@ -185,7 +273,33 @@ def test_append_query_log_updates_legacy_query_headers_before_appending():
         "user-2",
         "bail",
         "Lawyer",
+        "Legal",
         "Medium",
+        "chatbot_query",
+    ]
+
+
+def test_append_query_log_adds_answer_mode_to_old_clean_query_headers():
+    old_clean_headers = ["timestamp", "user_id", "query", "role", "confidence", "source"]
+    queries = FakeWorksheet(values=[old_clean_headers])
+    spreadsheet = FakeSpreadsheet({"queries": queries})
+
+    append_query_log(
+        user_id="user-3",
+        query="circumstantial evidence",
+        role="Researcher",
+        answer_mode="Student",
+        confidence="Low",
+        spreadsheet=spreadsheet,
+    )
+
+    assert queries.values == [QUERY_HEADERS]
+    assert queries.appended_rows[0][1:] == [
+        "user-3",
+        "circumstantial evidence",
+        "Researcher",
+        "Student",
+        "Low",
         "chatbot_query",
     ]
 

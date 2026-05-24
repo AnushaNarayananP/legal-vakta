@@ -28,7 +28,7 @@ class FakeWorksheet:
 
     def update(self, range_name=None, values=None):
         self.updated_ranges.append((range_name, values))
-        if range_name in (None, "A1:F1", "A1:G1", "A1:H1"):
+        if range_name in (None, "A1:F1", "A1:G1", "A1:H1", "A1:I1"):
             self.values = values
         elif range_name and range_name.startswith("A") and values:
             row_number = int(range_name.split(":")[0][1:])
@@ -119,6 +119,7 @@ def test_sheet_headers_match_tracking_contract():
         "name",
         "role",
         "query",
+        "answer_mode",
         "rating",
         "written_feedback",
         "source",
@@ -135,6 +136,7 @@ def test_save_feedback_appends_rating_written_feedback_and_source():
         name="Asha",
         role="Law Student",
         query="bail",
+        answer_mode="Student",
         rating="useful",
         written_feedback="Clear answer",
         spreadsheet=spreadsheet,
@@ -147,6 +149,7 @@ def test_save_feedback_appends_rating_written_feedback_and_source():
         "Asha",
         "Law Student",
         "bail",
+        "Student",
         "useful",
         "Clear answer",
         "chatbot_feedback",
@@ -163,6 +166,7 @@ def test_save_feedback_updates_legacy_feedback_headers_before_appending():
         name="",
         role="Researcher",
         query="evidence",
+        answer_mode="Legal",
         rating="not_useful",
         written_feedback="Needed more sources",
         spreadsheet=spreadsheet,
@@ -174,8 +178,47 @@ def test_save_feedback_updates_legacy_feedback_headers_before_appending():
         "",
         "Researcher",
         "evidence",
+        "Legal",
         "not_useful",
         "Needed more sources",
+        "chatbot_feedback",
+    ]
+
+
+def test_save_feedback_updates_current_feedback_headers_before_appending_answer_mode():
+    current_headers = [
+        "timestamp",
+        "user_id",
+        "name",
+        "role",
+        "query",
+        "rating",
+        "written_feedback",
+        "source",
+    ]
+    feedback = FakeWorksheet(values=[current_headers])
+    spreadsheet = FakeSpreadsheet({"feedback": feedback})
+
+    save_feedback(
+        user_id="user-3",
+        name="Asha",
+        role="Law Student",
+        query="benefit of doubt",
+        answer_mode="Student",
+        rating="useful",
+        written_feedback="Would come back",
+        spreadsheet=spreadsheet,
+    )
+
+    assert feedback.values == [FEEDBACK_HEADERS]
+    assert feedback.appended_rows[0][1:] == [
+        "user-3",
+        "Asha",
+        "Law Student",
+        "benefit of doubt",
+        "Student",
+        "useful",
+        "Would come back",
         "chatbot_feedback",
     ]
 

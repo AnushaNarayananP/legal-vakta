@@ -389,6 +389,7 @@ def test_save_feedback_appends_feedback_with_timestamp():
         user_id="user-2",
         name="Rao",
         role="Lawyer",
+        answer_mode="Legal",
         feedback_path=feedback_path,
     )
 
@@ -399,6 +400,7 @@ def test_save_feedback_appends_feedback_with_timestamp():
         "name",
         "role",
         "query",
+        "answer_mode",
         "rating",
         "written_feedback",
         "source",
@@ -407,6 +409,7 @@ def test_save_feedback_appends_feedback_with_timestamp():
     assert df["name"].tolist() == ["Rao"]
     assert df["role"].tolist() == ["Lawyer"]
     assert df["query"].tolist() == ["bail conditions"]
+    assert df["answer_mode"].tolist() == ["Legal"]
     assert df["rating"].tolist() == ["useful"]
     assert df["written_feedback"].fillna("").tolist() == [""]
     assert df["source"].tolist() == ["chatbot_feedback"]
@@ -429,6 +432,7 @@ def test_save_feedback_ignores_email_profile_field():
         name="Meera",
         email="meera@example.com",
         role="Researcher",
+        answer_mode="Student",
         feedback_path=feedback_path,
     )
 
@@ -439,12 +443,14 @@ def test_save_feedback_ignores_email_profile_field():
         "name",
         "role",
         "query",
+        "answer_mode",
         "rating",
         "written_feedback",
         "source",
     ]
     assert df["user_id"].tolist() == ["user-3"]
     assert df["role"].tolist() == ["Researcher"]
+    assert df["answer_mode"].tolist() == ["Student"]
     assert df["rating"].tolist() == ["not_useful"]
 
     shutil.rmtree(test_root)
@@ -463,16 +469,50 @@ def test_save_feedback_appends_written_feedback_to_csv():
         user_id="user-4",
         name="Asha",
         role="Law Student",
+        answer_mode="Student",
         written_feedback="The takeaway helped, sources were clear.",
         feedback_path=feedback_path,
     )
 
     df = pd.read_csv(feedback_path)
+    assert df["answer_mode"].tolist() == ["Student"]
     assert df["rating"].tolist() == ["useful"]
     assert df["written_feedback"].tolist() == ["The takeaway helped, sources were clear."]
     assert df["source"].tolist() == ["chatbot_feedback"]
 
     shutil.rmtree(test_root)
+
+
+def test_save_feedback_shows_debug_error_only_when_enabled(monkeypatch):
+    calls = []
+
+    def failing_save_feedback_to_sheets(**kwargs):
+        raise RuntimeError("Missing Streamlit secret: GOOGLE_SHEET_ID")
+
+    monkeypatch.setattr("src.utils.gsheets_logger.save_feedback", failing_save_feedback_to_sheets)
+    monkeypatch.setattr("src.ui.app.is_gsheets_debug_enabled", lambda: True)
+    monkeypatch.setattr("src.ui.app.st.error", lambda message: calls.append(("error", message)))
+    monkeypatch.setattr("src.ui.app.st.exception", lambda exc: calls.append(("exception", str(exc))))
+
+    assert save_feedback("query", "useful", user_id="user-1", role="Law Student") is False
+    assert calls[0][0] == "error"
+    assert "GOOGLE_SHEET_ID" in calls[0][1]
+    assert calls[1] == ("exception", "Missing Streamlit secret: GOOGLE_SHEET_ID")
+
+
+def test_save_feedback_hides_debug_error_when_disabled(monkeypatch):
+    calls = []
+
+    def failing_save_feedback_to_sheets(**kwargs):
+        raise RuntimeError("Missing Streamlit secret: GOOGLE_SHEET_ID")
+
+    monkeypatch.setattr("src.utils.gsheets_logger.save_feedback", failing_save_feedback_to_sheets)
+    monkeypatch.setattr("src.ui.app.is_gsheets_debug_enabled", lambda: False)
+    monkeypatch.setattr("src.ui.app.st.error", lambda message: calls.append(("error", message)))
+    monkeypatch.setattr("src.ui.app.st.exception", lambda exc: calls.append(("exception", str(exc))))
+
+    assert save_feedback("query", "useful", user_id="user-1", role="Law Student") is False
+    assert calls == []
 
 
 def test_load_usage_stats_handles_missing_files_and_counts_rows():

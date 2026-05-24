@@ -13,12 +13,23 @@ QUERY_HEADERS = ["timestamp", "user_id", "query", "role", "answer_mode", "confid
 LEGACY_CLEAN_QUERY_HEADERS = ["timestamp", "user_id", "query", "role", "confidence", "source"]
 LEGACY_QUERY_HEADERS = ["timestamp", "user_id", "name", "email", "role", "query"]
 LEGACY_FEEDBACK_HEADERS = ["timestamp", "user_id", "name", "role", "query", "feedback"]
+CURRENT_FEEDBACK_HEADERS = [
+    "timestamp",
+    "user_id",
+    "name",
+    "role",
+    "query",
+    "rating",
+    "written_feedback",
+    "source",
+]
 FEEDBACK_HEADERS = [
     "timestamp",
     "user_id",
     "name",
     "role",
     "query",
+    "answer_mode",
     "rating",
     "written_feedback",
     "source",
@@ -149,7 +160,11 @@ def ensure_worksheet(spreadsheet, title: str, headers: List[str], create_missing
         return worksheet
 
     if title == FEEDBACK_WORKSHEET and existing_values[0][: len(LEGACY_FEEDBACK_HEADERS)] == LEGACY_FEEDBACK_HEADERS:
-        worksheet.update(range_name="A1:H1", values=[headers])
+        worksheet.update(range_name="A1:I1", values=[headers])
+        return worksheet
+
+    if title == FEEDBACK_WORKSHEET and existing_values[0][: len(CURRENT_FEEDBACK_HEADERS)] == CURRENT_FEEDBACK_HEADERS:
+        worksheet.update(range_name="A1:I1", values=[headers])
         return worksheet
 
     if existing_values[0][: len(headers)] != headers:
@@ -294,6 +309,7 @@ def save_feedback(
     role: str,
     query: str,
     rating: str,
+    answer_mode: str = "Legal",
     written_feedback: str = "",
     source: str = "chatbot_feedback",
     spreadsheet=None,
@@ -308,6 +324,7 @@ def save_feedback(
             "name": name,
             "role": role,
             "query": query,
+            "answer_mode": normalize_answer_mode(answer_mode),
             "rating": rating,
             "written_feedback": written_feedback,
             "source": source,

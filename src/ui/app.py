@@ -458,6 +458,22 @@ def get_answer_mode():
     return st.session_state.get("answer_mode", "Legal")
 
 
+def is_gsheets_debug_enabled():
+    """Return True when Google Sheets debug output is explicitly enabled."""
+    try:
+        session_value = st.session_state.get("DEBUG_GSHEETS", None)
+        if session_value is not None:
+            return str(session_value).strip().lower() in {"1", "true", "yes", "on"}
+    except Exception:
+        pass
+
+    try:
+        secret_value = st.secrets.get("DEBUG_GSHEETS", False)
+        return str(secret_value).strip().lower() in {"1", "true", "yes", "on"}
+    except Exception:
+        return False
+
+
 def init_chat_state():
     """Initialize chat and answer-generation state."""
     if "messages" not in st.session_state:
@@ -608,6 +624,7 @@ def save_feedback(
     name="",
     role="",
     email=None,
+    answer_mode="Legal",
     written_feedback="",
     source="chatbot_feedback",
     feedback_path=None,
@@ -620,6 +637,7 @@ def save_feedback(
         "name",
         "role",
         "query",
+        "answer_mode",
         "rating",
         "written_feedback",
         "source",
@@ -634,6 +652,7 @@ def save_feedback(
                 "name": name,
                 "role": role,
                 "query": query,
+                "answer_mode": answer_mode,
                 "rating": feedback,
                 "written_feedback": written_feedback,
                 "source": source,
@@ -649,12 +668,18 @@ def save_feedback(
             name=name or "",
             role=role,
             query=query,
+            answer_mode=answer_mode,
             rating=feedback,
             written_feedback=written_feedback,
             source=source,
         )
         return True
-    except Exception:
+    except Exception as exc:
+        if is_gsheets_debug_enabled():
+            from src.utils.gsheets_logger import format_google_sheets_error
+
+            st.error(format_google_sheets_error(exc))
+            st.exception(exc)
         return False
 
 
@@ -1008,6 +1033,7 @@ def render_feedback_controls(prompt, response_id, answer_mode="Legal"):
             user_id=profile["user_id"],
             name=profile["name"],
             role=profile["role"],
+            answer_mode=answer_mode,
             written_feedback=written_feedback,
         ):
             mark_feedback_submitted(st.session_state, feedback_key)

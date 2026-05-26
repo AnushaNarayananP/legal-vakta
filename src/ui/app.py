@@ -47,6 +47,10 @@ SUGGESTED_QUERY_LABELS = [
 ]
 ROLE_OPTIONS = ["Law Student", "Lawyer", "Researcher", "Other"]
 ANSWER_MODE_OPTIONS = ["Legal", "Student"]
+LEGAL_DISCLAIMER_TEXT = (
+    "&#9888;&#65039; Disclaimer: SpaceL AI provides AI-assisted legal research "
+    "and not legal advice. Please independently verify citations and consult a qualified advocate."
+)
 LOCAL_STORAGE_USER_ID_KEY = "spacel_user_id"
 LOCAL_STORAGE_UNSET = object()
 QUERY_SOURCE_CHATBOT = "chatbot_query"
@@ -192,6 +196,14 @@ st.markdown(
         font-weight: 700;
         color: #111827;
         margin-bottom: .45rem;
+    }
+    .legal-disclaimer {
+        border-top: 1px solid var(--spacel-line);
+        color: #64748b;
+        font-size: .86rem;
+        line-height: 1.55;
+        margin: 1rem 0 .85rem 0;
+        padding-top: .75rem;
     }
     .source-meta {
         color: #374151;
@@ -908,6 +920,18 @@ def render_answer_sections(answer, mode="Legal", source_filter="all"):
     return rendered_any
 
 
+def render_legal_disclaimer():
+    """Render the legal disclaimer below a generated answer."""
+    st.markdown(
+        f"""
+        <div class="legal-disclaimer">
+            {LEGAL_DISCLAIMER_TEXT}
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
 def render_confidence_indicator(docs):
     """Display confidence based on number of retrieved documents."""
     confidence = get_confidence_label(docs)
@@ -1051,6 +1075,7 @@ def render_assistant_response(result, prompt, elapsed, response_id):
     answer_mode = result.get("mode", "Legal")
     render_confidence_indicator(result["retrieved_docs"])
     render_answer_sections(result["answer"], mode=answer_mode, source_filter="exclude")
+    render_legal_disclaimer()
     render_feedback_controls(prompt, response_id, answer_mode=answer_mode)
     if render_answer_sections(result["answer"], mode=answer_mode, source_filter="only"):
         st.divider()
@@ -1077,15 +1102,42 @@ def run_graph_with_mode(graph, prompt, mode):
         return fresh_graph.run(prompt, mode=mode)
 
 
-def generate_response_payload(graph, prompt, mode):
+def set_graph_stream_callback(graph, token_callback=None):
+    """Attach a temporary streaming callback when the active LLM supports it."""
+    llm = getattr(graph, "llm", None)
+    setter = getattr(llm, "set_stream_callback", None)
+    if callable(setter):
+        setter(token_callback)
+
+
+def log_response_timing(result, elapsed):
+    """Print before/after response timing breakdown for performance tracking."""
+    timings = result.get("timings", {}) if isinstance(result, dict) else {}
+    retrieval_time = float(timings.get("retrieval_time", 0.0) or 0.0)
+    llm_time = float(timings.get("llm_time", 0.0) or 0.0)
+    total_response_time = float(timings.get("total_response_time", elapsed) or elapsed)
+    print(
+        "SpaceL AI performance | before: ~38.00s | "
+        f"after: {elapsed:.2f}s | retrieval: {retrieval_time:.2f}s | "
+        f"llm: {llm_time:.2f}s | total: {total_response_time:.2f}s"
+    )
+
+
+def generate_response_payload(graph, prompt, mode, token_callback=None):
     """Generate one answer payload for the prompt/mode pair."""
     start_time = time.time()
-    result = run_graph_with_mode(graph, prompt, mode)
+    set_graph_stream_callback(graph, token_callback)
+    try:
+        result = run_graph_with_mode(graph, prompt, mode)
+    finally:
+        set_graph_stream_callback(graph, None)
+    elapsed = time.time() - start_time
+    log_response_timing(result, elapsed)
     return {
         "result": result,
         "prompt": prompt,
         "mode": mode,
-        "elapsed": time.time() - start_time,
+        "elapsed": elapsed,
         "response_id": str(time.time_ns()),
     }
 
@@ -1476,14 +1528,27 @@ def main():
 
     with st.chat_message("assistant"):
         st.caption("Retrieving legal precedents...")
+        streamed_answer = []
+        stream_placeholder = st.empty()
+
+        def show_streamed_token(token):
+            streamed_answer.append(token)
+            stream_placeholder.markdown("".join(streamed_answer))
+
         with st.spinner(get_loading_message(get_answer_mode())):
             try:
-                payload = generate_response_payload(graph, active_prompt, get_answer_mode())
+                payload = generate_response_payload(
+                    graph,
+                    active_prompt,
+                    get_answer_mode(),
+                    token_callback=show_streamed_token,
+                )
             except Exception as exc:
                 render_llm_error(exc)
                 render_sidebar()
                 return
 
+        stream_placeholder.empty()
         if not log_generated_query(payload, source=query_source):
             st.caption("Query analytics will sync after the browser user ID is ready.")
         render_assistant_response(

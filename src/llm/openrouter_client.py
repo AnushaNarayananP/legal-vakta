@@ -2,7 +2,7 @@
 
 import os
 from dataclasses import dataclass
-from typing import Iterable, List, Optional
+from typing import Callable, Iterable, List, Optional
 
 from dotenv import load_dotenv
 
@@ -14,26 +14,19 @@ PRIMARY_MODEL = os.getenv(
     "OPENROUTER_MODEL",
     os.getenv(
         "PRIMARY_MODEL",
-        "qwen/qwen3-next-80b-a3b-instruct",
+        "anthropic/claude-haiku-4.5",
     ),
 )
 FALLBACK_MODEL_1 = os.getenv(
     "OPENROUTER_FALLBACK_MODEL_1",
     os.getenv(
         "FALLBACK_MODEL_1",
-        os.getenv("BACKUP_MODEL_1", "meta-llama/llama-3.3-70b-instruct"),
-    ),
-)
-FALLBACK_MODEL_2 = os.getenv(
-    "OPENROUTER_FALLBACK_MODEL_2",
-    os.getenv(
-        "FALLBACK_MODEL_2",
-        os.getenv("BACKUP_MODEL_2", "google/gemma-3-27b-it"),
+        os.getenv("BACKUP_MODEL_1", "openai/gpt-4o-mini"),
     ),
 )
 OPENROUTER_TEMPERATURE = float(os.getenv("OPENROUTER_TEMPERATURE", "0.2"))
 OPENROUTER_MAX_TOKENS = int(os.getenv("OPENROUTER_MAX_TOKENS", "1200"))
-MODEL_FALLBACKS = [PRIMARY_MODEL, FALLBACK_MODEL_1, FALLBACK_MODEL_2]
+MODEL_FALLBACKS = [PRIMARY_MODEL, FALLBACK_MODEL_1]
 
 
 class OpenRouterLLMError(RuntimeError):
@@ -94,6 +87,7 @@ def call_openrouter_llm(
     client=None,
     models: Optional[List[str]] = None,
     temperature: Optional[float] = None,
+    token_callback: Optional[Callable[[str], None]] = None,
 ) -> str:
     """Call OpenRouter with primary model, then fallbacks on failure."""
     openrouter_client = client or get_openrouter_client()
@@ -106,13 +100,29 @@ def call_openrouter_llm(
 
     for model in model_order:
         try:
-            response = openrouter_client.chat.completions.create(
-                model=model,
-                messages=messages,
-                temperature=OPENROUTER_TEMPERATURE if temperature is None else temperature,
-                max_tokens=OPENROUTER_MAX_TOKENS,
-            )
-            return response.choices[0].message.content.strip()
+            request = {
+                "model": model,
+                "messages": messages,
+                "temperature": OPENROUTER_TEMPERATURE if temperature is None else temperature,
+                "max_tokens": OPENROUTER_MAX_TOKENS,
+            }
+            if token_callback is None:
+                response = openrouter_client.chat.completions.create(**request)
+                return response.choices[0].message.content.strip()
+
+            stream = openrouter_client.chat.completions.create(**request, stream=True)
+            chunks = []
+            for chunk in stream:
+                choices = getattr(chunk, "choices", []) or []
+                if not choices:
+                    continue
+                delta = getattr(choices[0], "delta", None)
+                token = getattr(delta, "content", None) if delta is not None else None
+                if not token:
+                    continue
+                chunks.append(token)
+                token_callback(token)
+            return "".join(chunks).strip()
         except Exception as exc:
             errors.append(f"{model}: {exc}")
 
@@ -126,6 +136,11 @@ class OpenRouterChatLLM:
         self.client = client
         self.models = [model] + [item for item in MODEL_FALLBACKS if item != model] if model else None
         self.temperature = temperature
+        self.token_callback = None
+
+    def set_stream_callback(self, token_callback: Optional[Callable[[str], None]]):
+        """Attach a temporary token callback for Streamlit response streaming."""
+        self.token_callback = token_callback
 
     def invoke(self, messages):
         """Invoke OpenRouter using LangChain-style chat messages."""
@@ -136,5 +151,6 @@ class OpenRouterChatLLM:
             client=self.client,
             models=self.models,
             temperature=self.temperature,
+            token_callback=self.token_callback,
         )
         return LLMResponse(content=answer)

@@ -30,7 +30,7 @@ class Settings:
     chunk_overlap = 150
     embedding_model = "sentence-transformers/all-MiniLM-L6-v2"
     retriever_k = 5
-    llm_model = "qwen/qwen3-next-80b-a3b-instruct:free"
+    llm_model = os.getenv("OPENROUTER_MODEL", "anthropic/claude-haiku-4.5")
     demo_video_url = os.getenv("SPACEL_DEMO_VIDEO_URL", "https://youtu.be/a5OXVLpDyH4")
     fallback_query_count = int(os.getenv("SPACEL_FALLBACK_QUERY_COUNT", "120"))
     fallback_helpful_percent = int(os.getenv("SPACEL_FALLBACK_HELPFUL_PERCENT", "78"))

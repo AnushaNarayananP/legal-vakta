@@ -107,3 +107,18 @@ def test_graph_builder_uses_langchain_compatible_message_shape():
         assert hasattr(message, "content")
         assert hasattr(message, "type")
         assert message.type in {"system", "human"}
+
+
+def test_graph_builder_records_retrieval_llm_and_total_timings():
+    doc = Document(
+        page_content="The court discussed evidence and benefit of doubt.",
+        metadata={"file_name": "case.pdf", "case_year": 2020, "page": 3},
+    )
+    graph = GraphBuilder(retriever=FakeRetriever([doc]), llm=FakeLLM())
+
+    result = graph.run("What did the court say?")
+
+    assert set(result["timings"]) == {"retrieval_time", "llm_time", "total_response_time"}
+    assert result["timings"]["retrieval_time"] >= 0
+    assert result["timings"]["llm_time"] >= 0
+    assert result["timings"]["total_response_time"] >= result["timings"]["retrieval_time"]

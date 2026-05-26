@@ -1,5 +1,6 @@
 """Structured legal reasoning graph for SpaceL AI."""
 
+import time
 from typing import List, TypedDict
 
 from langchain_core.messages import HumanMessage, SystemMessage
@@ -113,6 +114,7 @@ class RAGState(TypedDict):
     retrieved_docs: List[object]
     answer: str
     mode: str
+    timings: dict
 
 
 class GraphBuilder:
@@ -125,8 +127,13 @@ class GraphBuilder:
 
     def retrieve_docs(self, state: RAGState) -> RAGState:
         """Fetch relevant judgment chunks."""
+        start_time = time.perf_counter()
         docs = self.retriever.invoke(state["question"])
-        return {**state, "retrieved_docs": docs}
+        timings = {
+            **state.get("timings", {}),
+            "retrieval_time": time.perf_counter() - start_time,
+        }
+        return {**state, "retrieved_docs": docs, "timings": timings}
 
     def _format_context(self, documents: List[object]) -> str:
         """Convert retrieved chunks into source-labeled prompt context."""
@@ -177,19 +184,29 @@ class GraphBuilder:
 
     def generate_answer(self, state: RAGState) -> RAGState:
         """Generate grounded structured output or deterministic fallback."""
+        start_time = time.perf_counter()
         documents = state.get("retrieved_docs", [])
         mode = self._resolve_mode(state.get("mode", LEGAL_MODE))
+        timings = dict(state.get("timings", {}))
         if not documents:
-            return {**state, "answer": self._get_fallback_response(mode)}
+            timings["llm_time"] = 0.0
+            timings["total_response_time"] = sum(
+                timings.get(key, 0.0) for key in ("retrieval_time", "llm_time")
+            )
+            return {**state, "answer": self._get_fallback_response(mode), "timings": timings}
 
         messages = self._build_messages(state["question"], documents, mode=mode)
         response = self.llm.invoke(messages)
         answer = getattr(response, "content", str(response)).strip()
+        timings["llm_time"] = time.perf_counter() - start_time
+        timings["total_response_time"] = sum(
+            timings.get(key, 0.0) for key in ("retrieval_time", "llm_time")
+        )
 
         if not answer:
             answer = self._get_fallback_response(mode)
 
-        return {**state, "answer": answer}
+        return {**state, "answer": answer, "timings": timings}
 
     def build(self):
         """Compile the LangGraph graph when langgraph is installed."""
@@ -213,6 +230,7 @@ class GraphBuilder:
             "retrieved_docs": [],
             "answer": "",
             "mode": self._resolve_mode(mode),
+            "timings": {},
         }
 
         if StateGraph is None:

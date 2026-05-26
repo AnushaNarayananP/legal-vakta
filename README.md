@@ -139,6 +139,11 @@ pip install -r requirements.txt
 Create a `.env` file:
 
 ```env
+OPENROUTER_API_KEY=your_openrouter_api_key
+OPENROUTER_MODEL=anthropic/claude-haiku-4.5
+OPENROUTER_FALLBACK_MODEL_1=openai/gpt-4o-mini
+OPENROUTER_TEMPERATURE=0.2
+OPENROUTER_MAX_TOKENS=1200
 SPACEL_DEMO_VIDEO_URL=your_demo_video_url
 SPACEL_FALLBACK_QUERY_COUNT=120
 SPACEL_FALLBACK_HELPFUL_PERCENT=78

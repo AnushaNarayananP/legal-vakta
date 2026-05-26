@@ -4,6 +4,7 @@ import shutil
 import pandas as pd
 
 from src.ui.app import (
+    LEGAL_DISCLAIMER_TEXT,
     build_impact_stats,
     clear_session_user_id,
     consume_pending_query_event,
@@ -17,11 +18,14 @@ from src.ui.app import (
     get_query_param_user_id,
     get_recent_unique_queries,
     get_user_facing_error_message,
+    log_response_timing,
     load_usage_stats,
     log_generated_query,
     log_query,
     mark_feedback_submitted,
     queue_suggested_query,
+    render_assistant_response,
+    render_legal_disclaimer,
     QUERY_SOURCE_CHATBOT,
     QUERY_SOURCE_MANUAL_TEST,
     QUERY_SOURCE_MODE_REGENERATION,
@@ -374,6 +378,86 @@ def test_get_confidence_label_uses_allowed_sheet_values():
     assert get_confidence_label([object(), object(), object(), object()]) == "High"
     assert get_confidence_label([object(), object()]) == "Medium"
     assert get_confidence_label([]) == "Low"
+
+
+def test_render_legal_disclaimer_uses_muted_professional_markup(monkeypatch):
+    calls = []
+
+    monkeypatch.setattr(
+        "src.ui.app.st.markdown",
+        lambda body, unsafe_allow_html=False: calls.append((body, unsafe_allow_html)),
+    )
+
+    render_legal_disclaimer()
+
+    assert calls == [
+        (
+            f"""
+        <div class="legal-disclaimer">
+            {LEGAL_DISCLAIMER_TEXT}
+        </div>
+        """,
+            True,
+        )
+    ]
+
+
+def test_render_assistant_response_places_disclaimer_after_answer_before_feedback(monkeypatch):
+    calls = []
+
+    def fake_render_answer_sections(answer, mode="Legal", source_filter="all"):
+        calls.append(("sections", mode, source_filter))
+        return source_filter == "only"
+
+    monkeypatch.setattr("src.ui.app.render_confidence_indicator", lambda docs: calls.append(("confidence",)))
+    monkeypatch.setattr("src.ui.app.render_answer_sections", fake_render_answer_sections)
+    monkeypatch.setattr("src.ui.app.render_legal_disclaimer", lambda: calls.append(("disclaimer",)))
+    monkeypatch.setattr("src.ui.app.render_feedback_controls", lambda *args, **kwargs: calls.append(("feedback",)))
+    monkeypatch.setattr("src.ui.app.st.divider", lambda: calls.append(("divider",)))
+    monkeypatch.setattr("src.ui.app.render_retrieved_documents", lambda docs: calls.append(("retrieved",)))
+    monkeypatch.setattr("src.ui.app.render_copy_answer", lambda answer: calls.append(("copy",)))
+    monkeypatch.setattr("src.ui.app.st.success", lambda message: calls.append(("success",)))
+
+    render_assistant_response(
+        {"mode": "Student", "answer": "Simple Explanation: Test", "retrieved_docs": []},
+        prompt="benefit of doubt",
+        elapsed=1.23,
+        response_id="response-1",
+    )
+
+    assert calls == [
+        ("confidence",),
+        ("sections", "Student", "exclude"),
+        ("disclaimer",),
+        ("feedback",),
+        ("sections", "Student", "only"),
+        ("divider",),
+        ("retrieved",),
+        ("copy",),
+        ("success",),
+    ]
+
+
+def test_log_response_timing_prints_before_after_breakdown(monkeypatch):
+    calls = []
+    result = {
+        "timings": {
+            "retrieval_time": 1.25,
+            "llm_time": 4.5,
+            "total_response_time": 5.9,
+        }
+    }
+
+    monkeypatch.setattr("builtins.print", lambda message: calls.append(message))
+
+    log_response_timing(result, elapsed=6.0)
+
+    assert calls == [
+        (
+            "SpaceL AI performance | before: ~38.00s | after: 6.00s | "
+            "retrieval: 1.25s | llm: 4.50s | total: 5.90s"
+        )
+    ]
 
 
 def test_save_feedback_appends_feedback_with_timestamp():

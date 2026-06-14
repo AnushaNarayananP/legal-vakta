@@ -59,6 +59,23 @@ OUTPUT FORMAT:
 5. Source Evidence:
    - List Source 1, Source 2, Source 3, etc. in ascending order
    - Quote or closely paraphrase only from retrieved documents
+
+TEXT COMPLETION & LENGTH MANAGEMENT:
+- You must NEVER cut off mid-sentence or mid-word. Every sentence you generate must end with proper punctuation.
+- Prioritize high-density, concise legal explanations. Avoid long-winded paragraphs; get straight to the legal analysis.
+- Budget your generation tokens so that Section 4 (Final Takeaway) and Section 5 (Source Evidence) have ample room to complete naturally before reaching the maximum output ceiling.
+- If you are running low on space, shorten earlier sections rather than truncating later ones.
+- TOKEN BUDGETING: You have a hard output ceiling. Keep your text concise, eliminate fluff, and get straight to the legal analysis in the reasoning sections so that you have plenty of token budget remaining to finish Section 5 (Source Evidence) cleanly without hitting a mid-sentence truncation.
+
+CLEAN SNIPPET TRUNCATION:
+- When quoting or paraphrasing from a retrieved judgment snippet, if the source snippet itself ends abruptly, do NOT reproduce trailing orphan words or dangling conjunctions (e.g. "if", "and", "but", "the", "of the").
+- Close the thought cleanly with a period or use an ellipsis (...) to indicate that the original source was truncated.
+- Every generated sentence must be syntactically complete.
+
+EXPLICIT STOP SIGNAL:
+- End the final sentence of Section 5 (Source Evidence) with a clear period.
+- Immediately after the last period, append the marker: [End of Analysis]
+- Do not generate any text after [End of Analysis].
 """
 
 STUDENT_SYSTEM_PROMPT = f"""
@@ -104,6 +121,23 @@ OUTPUT FORMAT:
    - List Source 1, Source 2, Source 3, etc. in ascending order
    - Mention supporting source numbers in simple language
    - Quote or closely paraphrase only from the retrieved documents
+
+TEXT COMPLETION & LENGTH MANAGEMENT:
+- You must NEVER cut off mid-sentence or mid-word. Every sentence you generate must end with proper punctuation.
+- Prioritize high-density, concise explanations. Avoid long-winded paragraphs; get straight to the explanation.
+- Budget your generation tokens so that Section 4 (Why This Matters) and Section 5 (Simplified Source Evidence) have ample room to complete naturally before reaching the maximum output ceiling.
+- If you are running low on space, shorten earlier sections rather than truncating later ones.
+- TOKEN BUDGETING: You have a hard output ceiling. Keep your text concise, eliminate fluff, and get straight to the explanation so that you have plenty of token budget remaining to finish Section 5 (Simplified Source Evidence) cleanly without hitting a mid-sentence truncation.
+
+CLEAN SNIPPET TRUNCATION:
+- When quoting or paraphrasing from a retrieved judgment snippet, if the source snippet itself ends abruptly, do NOT reproduce trailing orphan words or dangling conjunctions (e.g. "if", "and", "but", "the", "of the").
+- Close the thought cleanly with a period or use an ellipsis (...) to indicate that the original source was truncated.
+- Every generated sentence must be syntactically complete.
+
+EXPLICIT STOP SIGNAL:
+- End the final sentence of Section 5 (Simplified Source Evidence) with a clear period.
+- Immediately after the last period, append the marker: [End of Analysis]
+- Do not generate any text after [End of Analysis].
 """
 
 

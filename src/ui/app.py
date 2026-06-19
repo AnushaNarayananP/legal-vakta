@@ -28,6 +28,7 @@ from src.ui.formatting import (
     parse_structured_answer,
     sort_source_evidence,
 )
+from src.ui.source_evidence_ui import render_source_evidence_section
 
 
 PROCESSED_DATA_DIR = PROJECT_ROOT / "data" / "processed"
@@ -958,33 +959,7 @@ def get_confidence_label(docs):
 
 def render_retrieved_documents(docs):
     """Show every retrieved source chunk in original retrieval order."""
-    st.markdown('<div class="section-gap"></div>', unsafe_allow_html=True)
-    st.divider()
-    st.markdown("### 📚 Source Evidence")
-
-    if not docs:
-        st.info("No documents retrieved.")
-        return
-
-    for source_number, doc in enumerate(docs, start=1):
-        label = format_case_label(doc, source_number=source_number)
-        display = get_source_display_metadata(doc)
-
-        with st.expander(label):
-            st.markdown(
-                f"""
-                <div class="source-meta">
-                    <strong>PDF:</strong> {display['pdf_name']}<br>
-                    <strong>Case year:</strong> {display['case_year']}<br>
-                    <strong>Page:</strong> {display['page']}
-                </div>
-                """,
-                unsafe_allow_html=True,
-            )
-            if display["relevance_reason"] != "Not available":
-                st.markdown(f"**Relevance reason:** {display['relevance_reason']}")
-            st.markdown("**Clean snippet:**")
-            st.info(clean_snippet(getattr(doc, "page_content", "")) or "Not available")
+    render_source_evidence_section(docs)
 
 
 def render_copy_answer(answer):

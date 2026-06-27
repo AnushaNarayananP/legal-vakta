@@ -13,10 +13,11 @@ from typing import Dict, List, Optional
 
 import pandas as pd
 import streamlit as st
-import streamlit.components.v1 as components
+
 
 from src.config import Settings
 from src.ui.formatting import clean_snippet
+from src.ui.timeline_ui import render_stored_timeline
 
 # ---------------------------------------------------------------------------
 # CSV metadata lookup
@@ -200,12 +201,38 @@ def render_source_evidence_card(
             # Show filename as a muted secondary line since case name is primary
             st.caption(f"📄 {file_name}")
 
+        # -- Timeline (conditionally visible — reads pre-extracted data) --
+        source_id = f"{source_number}_{file_name}"
+        pre_timeline = meta.get("pre_extracted_timeline", [])
+
+        # Ensure the timeline always ends with the Supreme Court's final
+        # decision date so the horizontal bar feels visually complete.
+        if pre_timeline and not any(
+            "supreme court" in node.get("event", "").lower()
+            for node in pre_timeline
+        ):
+            decision_date = (
+                str(csv_row.get("judgment_dates", "")).strip()
+                if csv_row
+                else ""
+            ) or "Final"
+            pre_timeline = [*pre_timeline, {
+                "date": decision_date,
+                "event": "Supreme Court of India delivers the final judgment on appeal.",
+            }]
+
+        render_stored_timeline(
+            source_id=source_id,
+            timeline_data=pre_timeline,
+        )
+
         # -- Snippet text --
+        raw_page_content = getattr(doc, "page_content", "")
         # NOTE: Highlighting uses keyword-overlap bolding from formatting.py
         # (emphasize_legal_keywords). This is NOT retrieval-flagged span
         # highlighting — the retriever/LLM does not produce highlight
         # offsets. The keyword list is a fixed set of common legal terms.
-        snippet_text = clean_snippet(getattr(doc, "page_content", ""))
+        snippet_text = clean_snippet(raw_page_content)
         if snippet_text:
             st.info(snippet_text)
         else:
@@ -226,7 +253,9 @@ def render_source_evidence_card(
             st.markdown(f"**Cited for:** {relevance}")
 
         # -- Action row --
-        action_col1, action_col2 = st.columns(2)
+        # Always show a 3-column layout so the timeline toggle is always
+        # visible.
+        action_col1, action_col2, action_col3 = st.columns(3)
 
         with action_col1:
             _render_open_judgment_button(meta, source_number)
@@ -234,6 +263,12 @@ def render_source_evidence_card(
         with action_col2:
             if citation:
                 _render_copy_citation_button(citation, source_number)
+
+        with action_col3:
+            st.toggle(
+                "📊 Timeline View",
+                key=f"timeline_toggle_{source_id}",
+            )
 
 
 def _render_open_judgment_button(meta: dict, source_number: int) -> None:
@@ -264,7 +299,7 @@ def _render_open_judgment_button(meta: dict, source_number: int) -> None:
 def _render_copy_citation_button(citation: str, source_number: int) -> None:
     """Render a button that copies the citation text to the clipboard.
 
-    Uses a small JS snippet via ``st.components.v1.html``, consistent with
+    Uses a small JS snippet via ``st.iframe``, consistent with
     the existing ``embed_inline_html`` pattern used elsewhere in the app.
     """
     safe_citation = html_mod.escape(citation).replace("'", "\\'")
@@ -296,7 +331,12 @@ def _render_copy_citation_button(citation: str, source_number: int) -> None:
         📋 Copy Citation
     </button>
     """
-    components.html(html_snippet, height=42)
+    st.iframe(html_snippet, height=42)
+
+
+# NOTE: The _render_timeline_toggle helper has been removed.
+# The timeline toggle is now rendered inline as st.toggle() in the
+# action row inside render_source_evidence_card().
 
 
 # ---------------------------------------------------------------------------
